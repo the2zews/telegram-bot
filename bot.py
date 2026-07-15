@@ -485,6 +485,78 @@ async def set_commands(app):
     await app.bot.set_my_commands(commands, scope=BotCommandScopeAllGroupChats())
     await app.bot.set_my_commands(commands, scope=BotCommandScopeAllPrivateChats())
 
+# ==================== ОСНОВНАЯ ОБРАБОТКА СООБЩЕНИЙ ====================
+
+async def handle_message(update, context):
+    if not update.message or not update.effective_user or update.effective_user.is_bot:
+        return
+    
+    user_id = update.effective_user.id
+    chat_id = update.effective_chat.id
+    
+    if await is_command_from_real_admin(update, context):
+        return
+    
+    if is_muted(user_id, chat_id):
+        try:
+            await update.message.delete()
+        except:
+            pass
+        return
+    
+    text = update.message.text or update.message.caption or ""
+    
+    if detect_link(text):
+        await update.message.delete()
+        await send_with_counter(context, chat_id, f"@{update.effective_user.username or update.effective_user.first_name}, ссылки запрещены.\nПравила: /rules")
+        return
+    
+    if detect_phone(text):
+        await update.message.delete()
+        await send_with_counter(context, chat_id, f"@{update.effective_user.username or update.effective_user.first_name}, номера телефонов запрещены.\nПравила: /rules")
+        return
+    
+    if detect_email(text):
+        await update.message.delete()
+        await send_with_counter(context, chat_id, f"@{update.effective_user.username or update.effective_user.first_name}, email-адреса запрещены.\nПравила: /rules")
+        return
+    
+    if update.message.text and check_flood(user_id, chat_id):
+        duration = FLOOD_MUTE_DURATION
+        set_muted(user_id, chat_id, duration)
+        await update.message.delete()
+        await context.bot.restrict_chat_member(chat_id, user_id, permissions=ChatPermissions(can_send_messages=False), until_date=int(time.time()) + duration)
+        name = update.effective_user.username or update.effective_user.first_name
+        await send_with_counter(context, chat_id, f"@{name} замучен на 5 минут за флуд.\nПравила: /rules")
+        db.reset_all_warns(user_id, chat_id)
+        return
+    
+    clean = clean_text(text)
+    
+    if contains_word(clean, INSULTS):
+        await update.message.delete()
+        new_count = db.add_warn(user_id, chat_id, "insult")
+        name = update.effective_user.username or update.effective_user.first_name
+        await send_with_counter(context, chat_id, f"@{name} получил предупреждение ({new_count}).")
+        if new_count >= 3:
+            set_muted(user_id, chat_id, 3600)
+            await context.bot.restrict_chat_member(chat_id, user_id, permissions=ChatPermissions(can_send_messages=False), until_date=int(time.time()) + 3600)
+            await send_with_counter(context, chat_id, f"@{name} замучен на 1 час за оскорбления.\nПравила: /rules")
+            db.reset_all_warns(user_id, chat_id)
+        return
+    
+    if contains_word(clean, ADULT_WORDS):
+        await update.message.delete()
+        adult_count = db.add_warn(user_id, chat_id, "adult")
+        name = update.effective_user.username or update.effective_user.first_name
+        if adult_count == 1:
+            await send_with_counter(context, chat_id, f"@{name}, предупреждение за 18+ контент. В следующий раз — бан.\nПравила: /rules")
+        else:
+            await context.bot.ban_chat_member(chat_id, user_id)
+            await send_with_counter(context, chat_id, f"@{name} забанен за 18+ контент (повторное нарушение).\nПравила: /rules")
+            db.reset_all_warns(user_id, chat_id)
+        return
+
 # ==================== ЗАПУСК ====================
 
 def main():
