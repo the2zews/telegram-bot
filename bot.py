@@ -811,4 +811,3 @@ app.add_handler(MessageHandler(filters.VIDEO & ~filters.COMMAND, handle_message)
 
 print("Бот запущен!")
 app.run_polling(allowed_updates=["message", "pinned_message"])
-```
