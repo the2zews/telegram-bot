@@ -12,8 +12,12 @@ logger = logging.getLogger(__name__)
 
 TOKEN = "8637462837:AAFygcu0eLNbXwhOMRPwuDwiry_bx8ij5KM"
 
-# Твои ID (реальные, не меняются)
-ADMIN_IDS = [5460879396, 8176145729]
+# Список админов (реальные + анонимные)
+ADMIN_IDS = [
+    5460879396,
+    8176145729,
+    1087968824,
+]
 
 # Настройки флуда
 FLOOD_LIMIT = 8
@@ -96,6 +100,14 @@ pinned_messages = {}
 
 # ==================== ФУНКЦИИ ДЛЯ ОБНАРУЖЕНИЯ ====================
 
+def normalize_text(text: str) -> str:
+    if not text:
+        return ""
+    text = re.sub(r'[^\w\s@.]', ' ', text)
+    text = re.sub(r'\s+', ' ', text).strip()
+    text = text.lower()
+    return text
+
 def clean_text(text: str) -> str:
     if not text:
         return ""
@@ -122,7 +134,7 @@ def contains_word(text: str, word_list: list) -> bool:
             return True
     return False
 
-# ==================== СПИСКИ СЛОВ ====================
+# ==================== РАСШИРЕННЫЙ СПИСОК ОСКОРБЛЕНИЙ ====================
 
 INSULTS = [
     "даун", "олигофрен", "дегенерат", "слабоумный",
@@ -133,127 +145,92 @@ INSULTS = [
     "тварь", "тварьебаная", "сукаебаная",
 ]
 
-HARMLESS = [
-    "дебил", "идиот", "кретин", "тупица", "бестолочь", "недоумок",
-    "пустоголовый", "ограниченный", "недалекий", "крыса", "скотина",
-    "скот", "предатель", "подонок", "отморозок", "мошенник", "вор",
-    "жулик", "стукач", "доносчик", "провокатор", "страшила",
-    "пугало", "горбатый", "кривой", "косой", "плешивый",
-    "паршивый", "гнилой", "трухлявый", "дохлый", "падаль",
-    "стерва", "стервоза", "деревянный", "завали", "завались",
-    "отвали", "отвались", "катись", "вали", "свали", "свалил",
-    "заткнись", "замолчи", "уймись", "сдуйся", "лопни", "тресни",
-    "сгинь", "пропади", "убогий", "слепой", "глухой", "немой",
-    "мерзавец", "негодяй", "сука", "бля", "блять", "нахуй",
-    "ебать", "ебаный", "курва", "жопа", "срака", "говно",
-    "дерьмо", "мусор", "пиздец", "мудак", "еблан",
-    "мамашу", "мамашку", "мамочку", "маму", "мать", "мама", "мамочка", "мамаша",
-    "дурак", "дурачок", "дурашка", "дурочка", "дуралей",
-    "глупыш", "глупенький", "глупец", "тупенький",
-    "тупик", "балбес", "балда", "олух", "простофиля",
-    "раззява", "растяпа", "шалопай", "дебилка", "идиотка",
-    "идиотик", "кретинка", "блин", "чёрт", "ёлки-палки",
-    "ёмоё", "никчемный", "ничтожество", "пустоеместо",
-    "неумеха", "неспособный", "рукикрюки", "криворукий",
-    "обезьяна", "реветь", "слезы", "спрыгни", "спрыгнуть",
-    "прыгай", "прыгни", "сигануть", "сигай", "удавись",
-    "вешайся", "повесься", "отравись", "порежь", "порежся",
-    "исчезни", "провались", "проваливай", "неживи",
-    "сжизнью", "расстаться", "убивайся", "убейся",
-    "захлопнись", "заколись", "застрелись", "глотку",
-    "перережь", "выпейяду", "кончайжизнь", "гроб",
-    "могила", "помри", "бомж", "алкаш", "пьяница",
-    "наркоман", "нищий", "токсик", "хейтер", "агрессор",
-    "абьюзер", "газлайтер", "манипулятор", "нарцисс",
-    "чурка", "хач", "черный", "узкоглазый", "быдло",
-    "шваль", "сволочь", "немощный", "инвалид", "калека",
-]
+# ==================== ФУНКЦИИ ДЛЯ ПОИСКА ====================
 
-ADULT_WORDS = [
-    "порно", "секс", "насилие", "изнасилование", "педофил",
-    "педофилия", "зоофил", "зоофилия", "сатанизм",
-    "расчленение", "насильник", "педофильский",
-]
-
-CATEGORIES = {
-    "insult": "Оскорбление",
-    "adult": "18+/Насилие",
-    "flood": "Флуд/Спам"
-}
-
-PUNISHMENTS = {
-    "insult": {1: "warn", 2: "warn", 3: "mute_1h"},
-    "adult": {1: "ban"},
-    "flood": {1: "mute_5m"}
-}
-
-MUTE_DURATIONS = {
-    "mute_5m": 300,
-    "mute_1h": 3600,
-}
-
-app = Application.builder().token(TOKEN).build()
-
-# ==================== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ====================
-
-def is_muted(user_id, chat_id):
-    key = f"{user_id}_{chat_id}"
-    if key in muted_users:
-        if muted_users[key] > time.time():
+def detect_link(text: str) -> bool:
+    if not text:
+        return False
+    
+    patterns = [
+        r'https?://[^\s]+',
+        r'www\.[^\s]+',
+        r't\.me/[^\s]+',
+        r'telegram\.org/[^\s]+',
+        r'bit\.ly/[^\s]+',
+        r'clck\.ru/[^\s]+',
+        r'[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/?',
+    ]
+    
+    for pattern in patterns:
+        if re.search(pattern, text, re.IGNORECASE):
             return True
-        else:
-            del muted_users[key]
     return False
 
-def set_muted(user_id, chat_id, duration):
-    key = f"{user_id}_{chat_id}"
-    muted_users[key] = int(time.time()) + duration
+def detect_phone(text: str) -> bool:
+    if not text:
+        return False
+    
+    patterns = [
+        r'\+?\d{1,3}[\s\-]?\(?\d{1,4}\)?[\s\-]?\d{1,4}[\s\-]?\d{1,4}[\s\-]?\d{1,4}',
+        r'\+?\d[\d\-]{8,}\d',
+        r'\+\d{1,3}\s?\d{1,4}\s?\d{1,4}\s?\d{1,4}',
+        r'8\s?\(?\d{3}\)?\s?\d{3}\s?\d{2}\s?\d{2}',
+        r'8-?\(?\d{3}\)-?\d{3}-?\d{2}-?\d{2}',
+        r'\+7\s?\(?\d{3}\)?\s?\d{3}\s?\d{2}\s?\d{2}',
+        r'7\s?\(?\d{3}\)?\s?\d{3}\s?\d{2}\s?\d{2}',
+        r'\d{3}[\s\-]?\d{3}[\s\-]?\d{2}[\s\-]?\d{2}',
+        r'\+7\s?\d{3}\s?\d{3}\s?\d{2}\s?\d{2}',
+        r'7\s?\d{3}\s?\d{3}\s?\d{2}\s?\d{2}',
+        r'\+?[0-9]{10,15}',
+    ]
+    
+    for pattern in patterns:
+        if re.search(pattern, text, re.IGNORECASE):
+            return True
+    return False
 
-def remove_mute(user_id, chat_id):
-    key = f"{user_id}_{chat_id}"
-    if key in muted_users:
-        del muted_users[key]
+def detect_email(text: str) -> bool:
+    if not text:
+        return False
+    pattern = r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}'
+    return bool(re.search(pattern, text, re.IGNORECASE))
 
-def check_flood(user_id, chat_id):
-    now = time.time()
-    user_messages[user_id].append(now)
-    user_messages[user_id] = [t for t in user_messages[user_id] if now - t <= FLOOD_TIME]
-    if len(user_messages[user_id]) > FLOOD_LIMIT:
-        user_messages[user_id] = []
+def detect_bot_invite(text: str) -> bool:
+    """Проверяет сообщения-ловушки про ботов и порно"""
+    if not text:
+        return False
+    
+    text_lower = text.lower()
+    
+    # Фразы для поиска
+    phrases = [
+        "зайди в профиль", "зайди в аккаунт", "зайди ко мне",
+        "в профиле есть", "в аккаунте есть", "посмотри в профиле",
+        "у меня в профиле", "в моем профиле", "в моём профиле",
+        "там есть", "там все есть", "там всё есть",
+        "порно бот", "порнобот", "порно боты",
+        "бот с порно", "порно в профиле",
+        "девушки", "девушка", "познакомиться", "встретиться",
+        "вип", "vip", "частное", "интим",
+    ]
+    
+    for phrase in phrases:
+        if phrase in text_lower:
+            return True
+    
+    # Проверка на упоминание ботов и профиля вместе
+    has_bot = "бот" in text_lower
+    has_profile = any(word in text_lower for word in ["профиль", "аккаунт", "страница"])
+    if has_bot and has_profile:
         return True
+    
     return False
 
-def parse_time(time_str: str) -> int:
-    if not time_str:
-        return 0
-    time_str = time_str.lower()
-    if time_str.isdigit():
-        return int(time_str) * 60
-    match = re.match(r'(\d+)([smhd])', time_str)
-    if match:
-        value = int(match.group(1))
-        unit = match.group(2)
-        if unit == 's':
-            return value
-        elif unit == 'm':
-            return value * 60
-        elif unit == 'h':
-            return value * 3600
-        elif unit == 'd':
-            return value * 86400
-    return 0
-
-def format_duration(seconds: int) -> str:
-    if seconds == 0:
-        return "навсегда"
-    elif seconds < 60:
-        return f"{seconds} секунд"
-    elif seconds < 3600:
-        return f"{seconds // 60} минут"
-    elif seconds < 86400:
-        return f"{seconds // 3600} часов"
-    else:
-        return f"{seconds // 86400} дней"
+def detect_hidden_spaces(text: str) -> bool:
+    if not text:
+        return False
+    words = re.findall(r'\b[а-яёa-z]\s+[а-яёa-z]\b', text, re.IGNORECASE)
+    return len(words) > 0
 
 # ==================== ПРОВЕРКА АДМИНА ====================
 
@@ -263,15 +240,12 @@ async def is_admin(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
     
     user_id = update.effective_user.id
 
-    # Проверяем по списку ID
     if user_id in ADMIN_IDS:
         return True
 
-    # Если личка — пропускаем
     if update.effective_chat.type == "private":
         return True
 
-    # Проверка статуса (если анонимность выключена)
     try:
         member = await context.bot.get_chat_member(update.effective_chat.id, user_id)
         if member.status in ['administrator', 'creator']:
@@ -372,7 +346,6 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await context.bot.send_message(chat_id=update.effective_user.id, text="Бот-модератор активирован. Используйте /help для списка команд.")
 
 async def cmd_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Показывает ID пользователя (доступно всем)"""
     if update.message.reply_to_message:
         target = update.message.reply_to_message.from_user
         text = f"ID пользователя @{target.username or target.first_name}: {target.id}"
@@ -412,8 +385,8 @@ async def cmd_rules(update: Update, context: ContextTypes.DEFAULT_TYPE):
 2. Без 18+ и насилия
 3. Не флудим/не спамим
 4. Не сливаем личные данные
-
-Правила могут изменяться и дополняться."""
+5. Без ссылок и рекламы
+6. Без номеров телефонов и email"""
     await update.message.reply_text(rules_text)
 
 # ==================== ОБРАБОТЧИК НОВЫХ УЧАСТНИКОВ ====================
@@ -685,43 +658,7 @@ async def cmd_unwarn(update: Update, context: ContextTypes.DEFAULT_TYPE):
         pass
     await send_admin_log(context, f"CLEAR WARNINGS\nAdmin: @{admin.username or admin.first_name}\nTarget: @{name}")
 
-# ==================== ОТКРЕПЛЕНИЕ СООБЩЕНИЙ ====================
-
-async def handle_pinned_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    chat_id = update.effective_chat.id
-    try:
-        chat = await context.bot.get_chat(chat_id)
-        if not chat.pinned_message:
-            return
-        pinned_msg_id = chat.pinned_message.message_id
-    except:
-        return
-    if chat_id in pinned_messages and pinned_messages[chat_id] == pinned_msg_id:
-        return
-    try:
-        await context.bot.unpin_chat_message(chat_id=chat_id)
-        pinned_messages[chat_id] = pinned_msg_id
-        if update.effective_user:
-            try:
-                if await is_admin(update, context):
-                    await context.bot.send_message(chat_id=update.effective_user.id, text="Сообщение автоматически откреплено. Закрепите повторно для постоянного.")
-            except:
-                pass
-        logger.info(f"Сообщение {pinned_msg_id} откреплено в чате {chat_id}")
-    except Exception as e:
-        logger.error(f"Ошибка при откреплении: {e}")
-
 # ==================== ОБРАБОТКА СООБЩЕНИЙ ====================
-
-def contains_mother_insult(text: str) -> bool:
-    if not text:
-        return False
-    text_lower = text.lower()
-    has_mother = any(word in text_lower for word in ["мать", "мама", "мамочка", "мамаша", "мамашку", "мамочку", "маму"])
-    if not has_mother:
-        return False
-    has_profanity = any(word in text_lower for word in ["сука", "бля", "хуй", "пизда", "блять", "нахуй", "ебать", "еблан", "мудак", "шлюха", "блядина", "курва", "хуйло", "хуесос"])
-    return has_mother and has_profanity
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message or not update.effective_user or update.effective_user.is_bot:
@@ -741,6 +678,73 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     
     text = update.message.text or update.message.caption or ""
+    text_normalized = normalize_text(text)
+    
+    # ==================== ПРОВЕРКА НА ЛАЗЕЙКИ ====================
+    
+    # 1. Проверка на скрытые пробелы
+    if detect_hidden_spaces(text):
+        try:
+            await update.message.delete()
+        except:
+            pass
+        await context.bot.send_message(
+            chat_id=chat_id,
+            text=f"@{update.effective_user.username or update.effective_user.first_name}, запрещено использовать пробелы для обхода фильтра."
+        )
+        return
+    
+    # 2. Проверка на ссылки
+    if detect_link(text):
+        try:
+            await update.message.delete()
+        except:
+            pass
+        await context.bot.send_message(
+            chat_id=chat_id,
+            text=f"@{update.effective_user.username or update.effective_user.first_name}, ссылки запрещены."
+        )
+        return
+    
+    # 3. Проверка на номера телефонов
+    if detect_phone(text):
+        try:
+            await update.message.delete()
+        except:
+            pass
+        await context.bot.send_message(
+            chat_id=chat_id,
+            text=f"@{update.effective_user.username or update.effective_user.first_name}, номера телефонов запрещены."
+        )
+        return
+    
+    # 4. Проверка на email
+    if detect_email(text):
+        try:
+            await update.message.delete()
+        except:
+            pass
+        await context.bot.send_message(
+            chat_id=chat_id,
+            text=f"@{update.effective_user.username or update.effective_user.first_name}, email-адреса запрещены."
+        )
+        return
+    
+    # 5. Проверка на ботов-ловушек (порно боты и т.п.)
+    if detect_bot_invite(text):
+        try:
+            await update.message.delete()
+        except:
+            pass
+        await context.bot.ban_chat_member(chat_id, user_id)
+        await context.bot.send_message(
+            chat_id=chat_id,
+            text=f"@{update.effective_user.username or update.effective_user.first_name} забанен за распространение порно-контента."
+        )
+        await send_admin_log(context, f"AUTO BAN - PORNO BOT\nTarget: @{update.effective_user.username or update.effective_user.first_name}\nID: {user_id}")
+        return
+    
+    # ==================== ОСТАЛЬНЫЕ ПРОВЕРКИ ====================
     
     if update.message.text:
         if check_flood(user_id, chat_id):
@@ -762,7 +766,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await send_admin_log(context, f"AUTO MUTE - FLOOD\nTarget: @{name}\nDuration: 5 minutes")
             return
     
-    if contains_word(text, INSULTS):
+    if contains_word(text_normalized, INSULTS):
         try:
             await update.message.delete()
         except:
@@ -783,28 +787,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             db.reset_all_warns(user_id, chat_id)
         return
     
-    if contains_mother_insult(text):
-        try:
-            await update.message.delete()
-        except:
-            pass
-        new_count = db.add_warn(user_id, chat_id, "insult")
-        name = update.effective_user.username or update.effective_user.first_name
-        await context.bot.send_message(chat_id=chat_id, text=f"@{name} получил предупреждение ({new_count}) за оскорбление.")
-        try:
-            await context.bot.send_message(chat_id=user_id, text=f"Вы получили предупреждение за оскорбление. Количество: {new_count}.")
-        except:
-            pass
-        await send_admin_log(context, f"AUTO WARN - MOTHER INSULT\nTarget: @{name}\nCount: {new_count}")
-        if new_count >= 3:
-            duration = MUTE_DURATIONS["mute_1h"]
-            set_muted(user_id, chat_id, duration)
-            await context.bot.restrict_chat_member(chat_id, user_id, permissions=ChatPermissions(can_send_messages=False), until_date=int(time.time()) + duration)
-            await context.bot.send_message(chat_id=chat_id, text=f"@{name} замучен на 1 час за оскорбления.")
-            db.reset_all_warns(user_id, chat_id)
-        return
-    
-    if contains_word(text, ADULT_WORDS):
+    if contains_word(text_normalized, ADULT_WORDS):
         try:
             await update.message.delete()
         except:
@@ -830,7 +813,6 @@ app.add_handler(CommandHandler("warn", cmd_warn))
 app.add_handler(CommandHandler("unwarn", cmd_unwarn))
 app.add_handler(CommandHandler("kick", cmd_kick))
 
-# Обработчик новых участников
 app.add_handler(MessageHandler(
     filters.StatusUpdate.NEW_CHAT_MEMBERS,
     handle_new_member
