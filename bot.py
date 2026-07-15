@@ -20,6 +20,11 @@ FLOOD_MUTE_DURATION = 300
 
 PENDING_COMMANDS = {}
 
+# ==================== СЧЁТЧИК СООБЩЕНИЙ ====================
+
+MESSAGE_COUNTER = 0
+ADMIN_MENTION = "Если заметите баги или ошибки, просьба написать админу о них @yabrad"
+
 # ==================== БАЗА ДАННЫХ ====================
 
 class Database:
@@ -250,13 +255,21 @@ async def send_admin_log(context, text):
         except:
             pass
 
-# ==================== ОТПРАВКА ЗАПРОСА АДМИНАМ (С КОРОТКИМ ID) ====================
+# ==================== ФУНКЦИЯ ОТПРАВКИ С СЧЁТЧИКОМ ====================
+
+async def send_with_counter(context, chat_id, text):
+    global MESSAGE_COUNTER
+    MESSAGE_COUNTER += 1
+    await context.bot.send_message(chat_id=chat_id, text=text)
+    
+    if MESSAGE_COUNTER % 4 == 0:
+        await context.bot.send_message(chat_id=chat_id, text="Если заметите баги или ошибки, просьба написать админу о них @yabrad")
+
+# ==================== ОТПРАВКА ЗАПРОСА АДМИНАМ ====================
 
 async def send_approval_request(context, admin_ids, command_type, target_name, target_id, duration, duration_text, requester_name, requester_id, chat_id):
-    # Генерируем уникальный ID для запроса
     request_id = f"{int(time.time())}_{requester_id}_{target_id}"
     
-    # Сохраняем данные запроса
     PENDING_COMMANDS[request_id] = {
         "command_type": command_type,
         "target_id": target_id,
@@ -337,7 +350,7 @@ async def cmd_rules(update, context):
 Правила могут изменяться и дополняться."""
     await update.message.reply_text(rules_text)
 
-# ==================== КОМАНДЫ НАКАЗАНИЙ (С ЗАПРОСОМ ПОДТВЕРЖДЕНИЯ) ====================
+# ==================== КОМАНДЫ НАКАЗАНИЙ ====================
 
 async def get_target(update, context):
     if update.message.reply_to_message:
@@ -548,7 +561,7 @@ async def handle_callback(update, context):
     duration = cmd_data["duration"]
     requester_id = cmd_data["requester_id"]
     
-    if action == 'a':  # approve
+    if action == 'a':
         try:
             if command_type == "mute":
                 duration_text = format_duration(duration) if duration > 0 else "навсегда"
@@ -558,43 +571,43 @@ async def handle_callback(update, context):
                     permissions=ChatPermissions(can_send_messages=False),
                     until_date=int(time.time()) + (duration if duration > 0 else 31536000)
                 )
-                await context.bot.send_message(chat_id, f"Пользователь замучен на {duration_text}.\nПравила: /rules")
+                await send_with_counter(context, chat_id, f"Пользователь замучен на {duration_text}.\nПравила: /rules")
                 db.reset_all_warns(target_id, chat_id)
                 await send_admin_log(context, f"MUTE\nAdmin: @{query.from_user.username or query.from_user.first_name}\nTarget ID: {target_id}\nDuration: {duration_text}")
                 
             elif command_type == "unmute":
                 remove_mute(target_id, chat_id)
                 await context.bot.restrict_chat_member(chat_id, target_id, permissions=ChatPermissions(can_send_messages=True))
-                await context.bot.send_message(chat_id, f"Мут снят.\nПравила: /rules")
+                await send_with_counter(context, chat_id, f"Мут снят.\nПравила: /rules")
                 await send_admin_log(context, f"UNMUTE\nAdmin: @{query.from_user.username or query.from_user.first_name}\nTarget ID: {target_id}")
                 
             elif command_type == "ban":
                 duration_text = format_duration(duration) if duration > 0 else "навсегда"
                 await context.bot.ban_chat_member(chat_id, target_id, until_date=int(time.time()) + duration if duration > 0 else None)
-                await context.bot.send_message(chat_id, f"Пользователь забанен на {duration_text}.\nПравила: /rules")
+                await send_with_counter(context, chat_id, f"Пользователь забанен на {duration_text}.\nПравила: /rules")
                 db.reset_all_warns(target_id, chat_id)
                 await send_admin_log(context, f"BAN\nAdmin: @{query.from_user.username or query.from_user.first_name}\nTarget ID: {target_id}\nDuration: {duration_text}")
                 
             elif command_type == "unban":
                 await context.bot.unban_chat_member(chat_id, target_id)
-                await context.bot.send_message(chat_id, f"Бан снят.\nПравила: /rules")
+                await send_with_counter(context, chat_id, f"Бан снят.\nПравила: /rules")
                 await send_admin_log(context, f"UNBAN\nAdmin: @{query.from_user.username or query.from_user.first_name}\nTarget ID: {target_id}")
                 
             elif command_type == "kick":
                 await context.bot.ban_chat_member(chat_id, target_id)
                 await context.bot.unban_chat_member(chat_id, target_id)
-                await context.bot.send_message(chat_id, f"Пользователь кикнут.\nПравила: /rules")
+                await send_with_counter(context, chat_id, f"Пользователь кикнут.\nПравила: /rules")
                 db.reset_all_warns(target_id, chat_id)
                 await send_admin_log(context, f"KICK\nAdmin: @{query.from_user.username or query.from_user.first_name}\nTarget ID: {target_id}")
                 
             elif command_type == "warn":
                 new_count = db.add_warn(target_id, chat_id, "insult")
-                await context.bot.send_message(chat_id, f"Пользователь получил предупреждение ({new_count}).\nПравила: /rules")
+                await send_with_counter(context, chat_id, f"Пользователь получил предупреждение ({new_count}).\nПравила: /rules")
                 await send_admin_log(context, f"WARN\nAdmin: @{query.from_user.username or query.from_user.first_name}\nTarget ID: {target_id}\nCount: {new_count}")
                 
             elif command_type == "unwarn":
                 db.reset_all_warns(target_id, chat_id)
-                await context.bot.send_message(chat_id, f"Предупреждения сняты.\nПравила: /rules")
+                await send_with_counter(context, chat_id, f"Предупреждения сняты.\nПравила: /rules")
                 await send_admin_log(context, f"UNWARN\nAdmin: @{query.from_user.username or query.from_user.first_name}\nTarget ID: {target_id}")
                 
         except Exception as e:
@@ -604,7 +617,7 @@ async def handle_callback(update, context):
         await query.edit_message_text(f"Команда {command_type} подтверждена и выполнена.")
         del PENDING_COMMANDS[request_id]
         
-    elif action == 'd':  # deny
+    elif action == 'd':
         await query.edit_message_text(f"Команда {command_type} отклонена.")
         try:
             await context.bot.send_message(chat_id=requester_id, text=f"Ваш запрос на {command_type} был отклонен.")
@@ -679,17 +692,17 @@ async def handle_message(update, context):
     
     if detect_link(text):
         await update.message.delete()
-        await context.bot.send_message(chat_id, f"@{update.effective_user.username or update.effective_user.first_name}, ссылки запрещены.\nПравила: /rules")
+        await send_with_counter(context, chat_id, f"@{update.effective_user.username or update.effective_user.first_name}, ссылки запрещены.\nПравила: /rules")
         return
     
     if detect_phone(text):
         await update.message.delete()
-        await context.bot.send_message(chat_id, f"@{update.effective_user.username or update.effective_user.first_name}, номера телефонов запрещены.\nПравила: /rules")
+        await send_with_counter(context, chat_id, f"@{update.effective_user.username or update.effective_user.first_name}, номера телефонов запрещены.\nПравила: /rules")
         return
     
     if detect_email(text):
         await update.message.delete()
-        await context.bot.send_message(chat_id, f"@{update.effective_user.username or update.effective_user.first_name}, email-адреса запрещены.\nПравила: /rules")
+        await send_with_counter(context, chat_id, f"@{update.effective_user.username or update.effective_user.first_name}, email-адреса запрещены.\nПравила: /rules")
         return
     
     if update.message.text and check_flood(user_id, chat_id):
@@ -698,7 +711,7 @@ async def handle_message(update, context):
         await update.message.delete()
         await context.bot.restrict_chat_member(chat_id, user_id, permissions=ChatPermissions(can_send_messages=False), until_date=int(time.time()) + duration)
         name = update.effective_user.username or update.effective_user.first_name
-        await context.bot.send_message(chat_id, f"@{name} замучен на 5 минут за флуд.\nПравила: /rules")
+        await send_with_counter(context, chat_id, f"@{name} замучен на 5 минут за флуд.\nПравила: /rules")
         db.reset_all_warns(user_id, chat_id)
         await send_admin_log(context, f"AUTO MUTE - FLOOD\nTarget: @{name}")
         return
@@ -709,12 +722,12 @@ async def handle_message(update, context):
         await update.message.delete()
         new_count = db.add_warn(user_id, chat_id, "insult")
         name = update.effective_user.username or update.effective_user.first_name
-        await context.bot.send_message(chat_id, f"@{name} получил предупреждение ({new_count}).\nПравила: /rules")
+        await send_with_counter(context, chat_id, f"@{name} получил предупреждение ({new_count}).\nПравила: /rules")
         await send_admin_log(context, f"AUTO WARN\nTarget: @{name}\nCount: {new_count}")
         if new_count >= 3:
             set_muted(user_id, chat_id, 3600)
             await context.bot.restrict_chat_member(chat_id, user_id, permissions=ChatPermissions(can_send_messages=False), until_date=int(time.time()) + 3600)
-            await context.bot.send_message(chat_id, f"@{name} замучен на 1 час за оскорбления.\nПравила: /rules")
+            await send_with_counter(context, chat_id, f"@{name} замучен на 1 час за оскорбления.\nПравила: /rules")
             db.reset_all_warns(user_id, chat_id)
         return
     
@@ -723,11 +736,11 @@ async def handle_message(update, context):
         adult_count = db.add_warn(user_id, chat_id, "adult")
         name = update.effective_user.username or update.effective_user.first_name
         if adult_count == 1:
-            await context.bot.send_message(chat_id, f"@{name}, предупреждение за 18+ контент. В следующий раз — бан.\nПравила: /rules")
+            await send_with_counter(context, chat_id, f"@{name}, предупреждение за 18+ контент. В следующий раз — бан.\nПравила: /rules")
             await send_admin_log(context, f"AUTO WARN - 18+\nTarget: @{name}")
         else:
             await context.bot.ban_chat_member(chat_id, user_id)
-            await context.bot.send_message(chat_id, f"@{name} забанен за 18+ контент (повторное нарушение).\nПравила: /rules")
+            await send_with_counter(context, chat_id, f"@{name} забанен за 18+ контент (повторное нарушение).\nПравила: /rules")
             db.reset_all_warns(user_id, chat_id)
             await send_admin_log(context, f"AUTO BAN - 18+\nTarget: @{name}")
         return
