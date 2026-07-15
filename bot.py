@@ -393,13 +393,19 @@ async def cmd_addadmin(update, context):
     chat_id = update.effective_chat.id
     user_id = update.effective_user.id
     
-    try:
-        member = await context.bot.get_chat_member(chat_id, user_id)
-        if member.status != "creator":
-            await update.message.reply_text("Только создатель группы может использовать эту команду.")
+    is_owner = (user_id == 5460879396)
+    is_creator = False
+    
+    if not is_owner:
+        try:
+            member = await context.bot.get_chat_member(chat_id, user_id)
+            is_creator = (member.status == "creator")
+        except:
+            await update.message.reply_text("Не удалось проверить статус.")
             return
-    except:
-        await update.message.reply_text("Не удалось проверить статус.")
+    
+    if not is_owner and not is_creator:
+        await update.message.reply_text("Только создатель группы может использовать эту команду.")
         return
     
     if not context.args:
@@ -436,13 +442,19 @@ async def cmd_removeadmin(update, context):
     chat_id = update.effective_chat.id
     user_id = update.effective_user.id
     
-    try:
-        member = await context.bot.get_chat_member(chat_id, user_id)
-        if member.status != "creator":
-            await update.message.reply_text("Только создатель группы может использовать эту команду.")
+    is_owner = (user_id == 5460879396)
+    is_creator = False
+    
+    if not is_owner:
+        try:
+            member = await context.bot.get_chat_member(chat_id, user_id)
+            is_creator = (member.status == "creator")
+        except:
+            await update.message.reply_text("Не удалось проверить статус.")
             return
-    except:
-        await update.message.reply_text("Не удалось проверить статус.")
+    
+    if not is_owner and not is_creator:
+        await update.message.reply_text("Только создатель группы может использовать эту команду.")
         return
     
     if not context.args:
