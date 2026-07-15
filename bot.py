@@ -12,13 +12,13 @@ logger = logging.getLogger(__name__)
 
 TOKEN = "8637462837:AAFygcu0eLNbXwhOMRPwuDwiry_bx8ij5KM"
 
+# Список ID администраторов (владельцев)
+ADMIN_IDS = [5460879396, 8176145729]
+
 # Настройки флуда
 FLOOD_LIMIT = 8
 FLOOD_TIME = 15
 FLOOD_MUTE_DURATION = 300
-
-# ID администратора
-ADMIN_ID = 8176145729
 
 # ==================== БАЗА ДАННЫХ ====================
 
@@ -177,8 +177,6 @@ ADULT_WORDS = [
     "расчленение", "насильник", "педофильский",
 ]
 
-PROFANITY = ["сука", "бля", "хуй", "пизда", "блять", "нахуй", "ебать"]
-
 CATEGORIES = {
     "insult": "Оскорбление",
     "adult": "18+/Насилие",
@@ -264,10 +262,16 @@ def format_duration(seconds: int) -> str:
 async def is_admin(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
     if not update.effective_user:
         return False
+    
     user_id = update.effective_user.id
-    chat_id = update.effective_chat.id
+    
+    # Проверяем по списку ID
+    if user_id in ADMIN_IDS:
+        return True
+    
+    # Проверяем, есть ли у пользователя права администратора в группе
     try:
-        member = await context.bot.get_chat_member(chat_id, user_id)
+        member = await context.bot.get_chat_member(update.effective_chat.id, user_id)
         return member.status in ['administrator', 'creator']
     except:
         return False
@@ -297,7 +301,7 @@ async def delete_after_delay(context: ContextTypes.DEFAULT_TYPE, chat_id: int, m
 
 async def send_admin_log(context: ContextTypes.DEFAULT_TYPE, text: str):
     try:
-        await context.bot.send_message(chat_id=ADMIN_ID, text=text)
+        await context.bot.send_message(chat_id=ADMIN_IDS[0], text=text)
     except:
         pass
 
@@ -409,6 +413,42 @@ async def cmd_rules(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 Правила могут изменяться и дополняться."""
     await update.message.reply_text(rules_text)
+
+# ==================== ОБРАБОТЧИК НОВЫХ УЧАСТНИКОВ (выдача тегов и прав) ====================
+
+async def handle_new_member(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Выдаёт тег 'бибизяна' и настраивает права новому участнику"""
+    for member in update.message.new_chat_members:
+        user_id = member.id
+        chat_id = update.effective_chat.id
+        
+        # 1. Выдаём тег "бибизяна"
+        try:
+            await context.bot.set_chat_administrator_custom_title(
+                chat_id=chat_id,
+                user_id=user_id,
+                custom_title="бибизяна"
+            )
+        except:
+            pass
+        
+        # 2. Настраиваем права (как на скриншоте)
+        try:
+            await context.bot.restrict_chat_member(
+                chat_id=chat_id,
+                user_id=user_id,
+                permissions=ChatPermissions(
+                    can_send_messages=True,
+                    can_send_media_messages=True,
+                    can_send_other_messages=True,
+                    can_add_web_page_previews=True,
+                    can_send_polls=False,
+                    can_send_audios=False,
+                    can_send_documents=False,
+                )
+            )
+        except:
+            pass
 
 # ==================== КОМАНДЫ НАКАЗАНИЙ ====================
 
@@ -668,7 +708,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             pass
         return
     
-    # Получаем текст из сообщения или caption
     text = update.message.text or update.message.caption or ""
     
     if update.message.text:
@@ -691,7 +730,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await send_admin_log(context, f"AUTO MUTE - FLOOD\nTarget: @{name}\nDuration: 5 minutes")
             return
     
-    # Проверка на жесткие оскорбления (с очисткой текста)
     if contains_word(text, INSULTS):
         try:
             await update.message.delete()
@@ -713,7 +751,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             db.reset_all_warns(user_id, chat_id)
         return
     
-    # Проверка на оскорбление матери с матом
     if contains_mother_insult(text):
         try:
             await update.message.delete()
@@ -735,7 +772,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             db.reset_all_warns(user_id, chat_id)
         return
     
-    # Проверка на 18+
     if contains_word(text, ADULT_WORDS):
         try:
             await update.message.delete()
@@ -747,9 +783,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         db.reset_all_warns(user_id, chat_id)
         await send_admin_log(context, f"AUTO BAN\nTarget: @{name}\nReason: 18+")
         return
-
-async def set_commands(app: Application):
-    await app.bot.set_my_commands([BotCommand("rules", "Правила группы")])
 
 # ==================== РЕГИСТРАЦИЯ ====================
 
@@ -764,6 +797,12 @@ app.add_handler(CommandHandler("unban", cmd_unban))
 app.add_handler(CommandHandler("warn", cmd_warn))
 app.add_handler(CommandHandler("unwarn", cmd_unwarn))
 app.add_handler(CommandHandler("kick", cmd_kick))
+
+# Обработчик новых участников (выдача тегов и прав)
+app.add_handler(MessageHandler(
+    filters.StatusUpdate.NEW_CHAT_MEMBERS,
+    handle_new_member
+))
 
 app.add_handler(MessageHandler(filters.StatusUpdate.PINNED_MESSAGE, handle_pinned_message))
 app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
