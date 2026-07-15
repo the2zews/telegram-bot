@@ -252,24 +252,22 @@ def format_duration(seconds: int) -> str:
     else:
         return f"{seconds // 86400} дней"
 
-# ==================== ПРОВЕРКА АДМИНОВ (РАБОТАЕТ С АНОНИМНОСТЬЮ) ====================
+# ==================== ПРОВЕРКА АДМИНА (РАБОТАЕТ ЧЕРЕЗ ЛИЧКУ) ====================
 
 async def is_admin(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
     if not update.effective_user:
         return False
     
-    user_id = update.effective_user.id
-    chat_id = update.effective_chat.id
-
+    # Если команда из лички — пропускаем (ты админ)
+    if update.effective_chat.type == "private":
+        return True
+    
+    # Если из группы — проверяем статус
     try:
-        member = await context.bot.get_chat_member(chat_id, user_id)
-        # Проверяем статус в группе (работает даже с анонимностью)
-        if member.status in ['administrator', 'creator']:
-            return True
-    except Exception as e:
-        logger.error(f"Ошибка проверки статуса: {e}")
-
-    return False
+        member = await context.bot.get_chat_member(update.effective_chat.id, update.effective_user.id)
+        return member.status in ['administrator', 'creator']
+    except:
+        return False
 
 async def is_target_creator(update: Update, context: ContextTypes.DEFAULT_TYPE, target_user_id: int) -> bool:
     chat_id = update.effective_chat.id
@@ -359,13 +357,11 @@ async def check_target(update: Update, context: ContextTypes.DEFAULT_TYPE, targe
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await is_admin(update, context):
         return
-    asyncio.create_task(delete_after_delay(context, update.effective_chat.id, update.message.message_id, 1))
     await context.bot.send_message(chat_id=update.effective_user.id, text="Бот-модератор активирован. Используйте /help для списка команд.")
 
 async def cmd_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await is_admin(update, context):
         return
-    asyncio.create_task(delete_after_delay(context, update.effective_chat.id, update.message.message_id, 1))
     if update.message.reply_to_message:
         target = update.message.reply_to_message.from_user
         text = f"ID пользователя @{target.username or target.first_name}: {target.id}"
@@ -377,7 +373,6 @@ async def cmd_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await is_admin(update, context):
         return
-    asyncio.create_task(delete_after_delay(context, update.effective_chat.id, update.message.message_id, 1))
     help_text = """Доступные команды для администраторов:
 
 /rules - показать правила группы
@@ -417,7 +412,6 @@ async def handle_new_member(update: Update, context: ContextTypes.DEFAULT_TYPE):
         user_id = member.id
         chat_id = update.effective_chat.id
         
-        # 1. Выдаём тег "бибизяна"
         try:
             await context.bot.set_chat_administrator_custom_title(
                 chat_id=chat_id,
@@ -427,7 +421,6 @@ async def handle_new_member(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except:
             pass
         
-        # 2. Настраиваем права
         try:
             await context.bot.restrict_chat_member(
                 chat_id=chat_id,
@@ -450,32 +443,51 @@ async def handle_new_member(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def cmd_mute(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await is_admin(update, context):
         return
-    asyncio.create_task(delete_after_delay(context, update.effective_chat.id, update.message.message_id, 1))
+    
     admin = update.effective_user
     target, user_id = await get_target_from_command(update, context)
+    
+    # Если команда из лички — берём chat_id из аргументов или просим указать
+    chat_id = update.effective_chat.id
+    if update.effective_chat.type == "private":
+        if context.args and len(context.args) > 1:
+            # Пробуем найти группу по ID (если указан)
+            try:
+                chat_id = int(context.args[-1])
+            except:
+                await context.bot.send_message(chat_id=update.effective_user.id, text="Укажите ID группы или выполняйте команду в группе.")
+                return
+        else:
+            await context.bot.send_message(chat_id=update.effective_user.id, text="Выполняйте команду в группе или укажите ID группы.")
+            return
+    
     if not target and not user_id:
         await context.bot.send_message(chat_id=update.effective_user.id, text="Ошибка: ответьте на сообщение или укажите ID.")
         return
+    
     if target:
         name = target.username or target.first_name
         user_id = target.id
     else:
         name = f"user_{user_id}"
+    
     if not await check_target(update, context, user_id, name):
         return
+    
     duration = extract_time_from_command(update.message.text)
     if duration > 0:
-        set_muted(user_id, update.effective_chat.id, duration)
+        set_muted(user_id, chat_id, duration)
         until_date = int(time.time()) + duration
         duration_text = format_duration(duration)
     else:
-        set_muted(user_id, update.effective_chat.id, 31536000)
+        set_muted(user_id, chat_id, 31536000)
         until_date = int(time.time()) + 31536000
         duration_text = "навсегда"
+    
     try:
-        await context.bot.restrict_chat_member(update.effective_chat.id, user_id, permissions=ChatPermissions(can_send_messages=False), until_date=until_date)
-        await context.bot.send_message(chat_id=update.effective_chat.id, text=f"@{name} замучен на {duration_text}.")
-        db.reset_all_warns(user_id, update.effective_chat.id)
+        await context.bot.restrict_chat_member(chat_id, user_id, permissions=ChatPermissions(can_send_messages=False), until_date=until_date)
+        await context.bot.send_message(chat_id=chat_id, text=f"@{name} замучен на {duration_text}.")
+        db.reset_all_warns(user_id, chat_id)
         try:
             await context.bot.send_message(chat_id=user_id, text=f"Вы замучены в группе на {duration_text}.")
         except:
@@ -484,28 +496,47 @@ async def cmd_mute(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         await context.bot.send_message(chat_id=update.effective_user.id, text=f"Ошибка: {e}")
 
+# Остальные команды (unmute, ban, unban, kick, warn, unwarn) - аналогично, требуют chat_id
+
 async def cmd_unmute(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await is_admin(update, context):
         return
-    asyncio.create_task(delete_after_delay(context, update.effective_chat.id, update.message.message_id, 1))
+    
     admin = update.effective_user
     target, user_id = await get_target_from_command(update, context)
+    
+    chat_id = update.effective_chat.id
+    if update.effective_chat.type == "private":
+        if context.args and len(context.args) > 1:
+            try:
+                chat_id = int(context.args[-1])
+            except:
+                await context.bot.send_message(chat_id=update.effective_user.id, text="Укажите ID группы.")
+                return
+        else:
+            await context.bot.send_message(chat_id=update.effective_user.id, text="Выполняйте команду в группе или укажите ID группы.")
+            return
+    
     if not target and not user_id:
         await context.bot.send_message(chat_id=update.effective_user.id, text="Ошибка: ответьте на сообщение или укажите ID.")
         return
+    
     if target:
         name = target.username or target.first_name
         user_id = target.id
     else:
         name = f"user_{user_id}"
+    
     bot_user = await context.bot.get_me()
     if user_id == bot_user.id:
         await context.bot.send_message(chat_id=update.effective_user.id, text="Ошибка: невозможно применить действие к боту.")
         return
-    remove_mute(user_id, update.effective_chat.id)
+    
+    remove_mute(user_id, chat_id)
+    
     try:
-        await context.bot.restrict_chat_member(update.effective_chat.id, user_id, permissions=ChatPermissions(can_send_messages=True))
-        await context.bot.send_message(chat_id=update.effective_chat.id, text=f"Мут для @{name} снят.")
+        await context.bot.restrict_chat_member(chat_id, user_id, permissions=ChatPermissions(can_send_messages=True))
+        await context.bot.send_message(chat_id=chat_id, text=f"Мут для @{name} снят.")
         try:
             await context.bot.send_message(chat_id=user_id, text="Ваш мут в группе снят.")
         except:
@@ -517,29 +548,45 @@ async def cmd_unmute(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def cmd_ban(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await is_admin(update, context):
         return
-    asyncio.create_task(delete_after_delay(context, update.effective_chat.id, update.message.message_id, 1))
+    
     admin = update.effective_user
     target, user_id = await get_target_from_command(update, context)
+    
+    chat_id = update.effective_chat.id
+    if update.effective_chat.type == "private":
+        if context.args and len(context.args) > 1:
+            try:
+                chat_id = int(context.args[-1])
+            except:
+                await context.bot.send_message(chat_id=update.effective_user.id, text="Укажите ID группы.")
+                return
+        else:
+            await context.bot.send_message(chat_id=update.effective_user.id, text="Выполняйте команду в группе или укажите ID группы.")
+            return
+    
     if not target and not user_id:
         await context.bot.send_message(chat_id=update.effective_user.id, text="Ошибка: ответьте на сообщение или укажите ID.")
         return
+    
     if target:
         name = target.username or target.first_name
         user_id = target.id
     else:
         name = f"user_{user_id}"
+    
     if not await check_target(update, context, user_id, name):
         return
+    
     duration = extract_time_from_command(update.message.text)
     try:
         if duration > 0:
-            await context.bot.ban_chat_member(update.effective_chat.id, user_id, until_date=int(time.time()) + duration)
+            await context.bot.ban_chat_member(chat_id, user_id, until_date=int(time.time()) + duration)
             duration_text = format_duration(duration)
         else:
-            await context.bot.ban_chat_member(update.effective_chat.id, user_id)
+            await context.bot.ban_chat_member(chat_id, user_id)
             duration_text = "навсегда"
-        await context.bot.send_message(chat_id=update.effective_chat.id, text=f"@{name} забанен на {duration_text}.")
-        db.reset_all_warns(user_id, update.effective_chat.id)
+        await context.bot.send_message(chat_id=chat_id, text=f"@{name} забанен на {duration_text}.")
+        db.reset_all_warns(user_id, chat_id)
         try:
             await context.bot.send_message(chat_id=user_id, text=f"Вы забанены в группе на {duration_text}.")
         except:
@@ -551,24 +598,40 @@ async def cmd_ban(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def cmd_unban(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await is_admin(update, context):
         return
-    asyncio.create_task(delete_after_delay(context, update.effective_chat.id, update.message.message_id, 1))
+    
     admin = update.effective_user
     target, user_id = await get_target_from_command(update, context)
+    
+    chat_id = update.effective_chat.id
+    if update.effective_chat.type == "private":
+        if context.args and len(context.args) > 1:
+            try:
+                chat_id = int(context.args[-1])
+            except:
+                await context.bot.send_message(chat_id=update.effective_user.id, text="Укажите ID группы.")
+                return
+        else:
+            await context.bot.send_message(chat_id=update.effective_user.id, text="Выполняйте команду в группе или укажите ID группы.")
+            return
+    
     if not target and not user_id:
         await context.bot.send_message(chat_id=update.effective_user.id, text="Ошибка: ответьте на сообщение или укажите ID.")
         return
+    
     if target:
         name = target.username or target.first_name
         user_id = target.id
     else:
         name = f"user_{user_id}"
+    
     bot_user = await context.bot.get_me()
     if user_id == bot_user.id:
         await context.bot.send_message(chat_id=update.effective_user.id, text="Ошибка: невозможно применить действие к боту.")
         return
+    
     try:
-        await context.bot.unban_chat_member(update.effective_chat.id, user_id)
-        await context.bot.send_message(chat_id=update.effective_chat.id, text=f"Бан для @{name} снят.")
+        await context.bot.unban_chat_member(chat_id, user_id)
+        await context.bot.send_message(chat_id=chat_id, text=f"Бан для @{name} снят.")
         try:
             await context.bot.send_message(chat_id=user_id, text="Ваш бан в группе снят.")
         except:
@@ -580,24 +643,37 @@ async def cmd_unban(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def cmd_kick(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await is_admin(update, context):
         return
-    asyncio.create_task(delete_after_delay(context, update.effective_chat.id, update.message.message_id, 1))
+    
     admin = update.effective_user
     target, user_id = await get_target_from_command(update, context)
-    if not target and not user_id:
+    
+    chat_id = update.effective_chat.id
+    if update.effective_chat.type == "private":
+        if context.args and len(context.args) > 1:
+            try:
+                chat_id = int(context.args[-1])
+            except:
+                await context.bot.send_message(chat_id=update.effective_user.id, text="Укажите ID группы.")
+                return
+        else:
+            await context.bot.send_message(chat_id=update.effective_user.id, text="Выполняйте команду в группе или укажите ID группы.")
+            return
+    
+    if not target:
         await context.bot.send_message(chat_id=update.effective_user.id, text="Ошибка: ответьте на сообщение или укажите ID.")
         return
-    if target:
-        name = target.username or target.first_name
-        user_id = target.id
-    else:
-        name = f"user_{user_id}"
+    
+    name = target.username or target.first_name
+    user_id = target.id
+    
     if not await check_target(update, context, user_id, name):
         return
+    
     try:
-        await context.bot.ban_chat_member(update.effective_chat.id, user_id)
-        await context.bot.unban_chat_member(update.effective_chat.id, user_id)
-        await context.bot.send_message(chat_id=update.effective_chat.id, text=f"@{name} кикнут.")
-        db.reset_all_warns(user_id, update.effective_chat.id)
+        await context.bot.ban_chat_member(chat_id, user_id)
+        await context.bot.unban_chat_member(chat_id, user_id)
+        await context.bot.send_message(chat_id=chat_id, text=f"@{name} кикнут.")
+        db.reset_all_warns(user_id, chat_id)
         await send_admin_log(context, f"KICK\nAdmin: @{admin.username or admin.first_name}\nTarget: @{name}")
     except Exception as e:
         await context.bot.send_message(chat_id=update.effective_user.id, text=f"Ошибка: {e}")
@@ -605,21 +681,37 @@ async def cmd_kick(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def cmd_warn(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await is_admin(update, context):
         return
-    asyncio.create_task(delete_after_delay(context, update.effective_chat.id, update.message.message_id, 1))
+    
     admin = update.effective_user
     target, user_id = await get_target_from_command(update, context)
+    
+    chat_id = update.effective_chat.id
+    if update.effective_chat.type == "private":
+        if context.args and len(context.args) > 1:
+            try:
+                chat_id = int(context.args[-1])
+            except:
+                await context.bot.send_message(chat_id=update.effective_user.id, text="Укажите ID группы.")
+                return
+        else:
+            await context.bot.send_message(chat_id=update.effective_user.id, text="Выполняйте команду в группе или укажите ID группы.")
+            return
+    
     if not target and not user_id:
         await context.bot.send_message(chat_id=update.effective_user.id, text="Ошибка: ответьте на сообщение или укажите ID.")
         return
+    
     if target:
         name = target.username or target.first_name
         user_id = target.id
     else:
         name = f"user_{user_id}"
+    
     if not await check_target(update, context, user_id, name):
         return
-    new_count = db.add_warn(user_id, update.effective_chat.id, "insult")
-    await context.bot.send_message(chat_id=update.effective_chat.id, text=f"@{name} получил предупреждение ({new_count}).")
+    
+    new_count = db.add_warn(user_id, chat_id, "insult")
+    await context.bot.send_message(chat_id=chat_id, text=f"@{name} получил предупреждение ({new_count}).")
     try:
         await context.bot.send_message(chat_id=user_id, text=f"Вы получили предупреждение в группе. Количество: {new_count}.")
     except:
@@ -629,19 +721,34 @@ async def cmd_warn(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def cmd_unwarn(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await is_admin(update, context):
         return
-    asyncio.create_task(delete_after_delay(context, update.effective_chat.id, update.message.message_id, 1))
+    
     admin = update.effective_user
     target, user_id = await get_target_from_command(update, context)
+    
+    chat_id = update.effective_chat.id
+    if update.effective_chat.type == "private":
+        if context.args and len(context.args) > 1:
+            try:
+                chat_id = int(context.args[-1])
+            except:
+                await context.bot.send_message(chat_id=update.effective_user.id, text="Укажите ID группы.")
+                return
+        else:
+            await context.bot.send_message(chat_id=update.effective_user.id, text="Выполняйте команду в группе или укажите ID группы.")
+            return
+    
     if not target and not user_id:
         await context.bot.send_message(chat_id=update.effective_user.id, text="Ошибка: ответьте на сообщение или укажите ID.")
         return
+    
     if target:
         name = target.username or target.first_name
         user_id = target.id
     else:
         name = f"user_{user_id}"
-    db.reset_all_warns(user_id, update.effective_chat.id)
-    await context.bot.send_message(chat_id=update.effective_chat.id, text=f"Предупреждения для @{name} сняты.")
+    
+    db.reset_all_warns(user_id, chat_id)
+    await context.bot.send_message(chat_id=chat_id, text=f"Предупреждения для @{name} сняты.")
     try:
         await context.bot.send_message(chat_id=user_id, text="Ваши предупреждения в группе сняты.")
     except:
