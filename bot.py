@@ -12,10 +12,16 @@ logger = logging.getLogger(__name__)
 
 TOKEN = "8637462837:AAFygcu0eLNbXwhOMRPwuDwiry_bx8ij5KM"
 
+# Список ID, которые могут управлять ботом (твой и второго админа)
+ADMIN_IDS = [5460879396, 8176145729]
+
 # Настройки флуда
 FLOOD_LIMIT = 8
 FLOOD_TIME = 15
 FLOOD_MUTE_DURATION = 300
+
+# Хранилище ID группы (запоминается при первом запуске в группе)
+DEFAULT_CHAT_ID = None
 
 # ==================== БАЗА ДАННЫХ ====================
 
@@ -252,22 +258,19 @@ def format_duration(seconds: int) -> str:
     else:
         return f"{seconds // 86400} дней"
 
-# ==================== ПРОВЕРКА АДМИНА (РАБОТАЕТ ЧЕРЕЗ ЛИЧКУ) ====================
+# ==================== ПРОВЕРКА АДМИНА ПО ID (НАВСЕГДА) ====================
 
 async def is_admin(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
     if not update.effective_user:
         return False
     
-    # Если команда из лички — пропускаем (ты админ)
-    if update.effective_chat.type == "private":
+    user_id = update.effective_user.id
+    
+    # Проверяем по ID
+    if user_id in ADMIN_IDS:
         return True
     
-    # Если из группы — проверяем статус
-    try:
-        member = await context.bot.get_chat_member(update.effective_chat.id, update.effective_user.id)
-        return member.status in ['administrator', 'creator']
-    except:
-        return False
+    return False
 
 async def is_target_creator(update: Update, context: ContextTypes.DEFAULT_TYPE, target_user_id: int) -> bool:
     chat_id = update.effective_chat.id
@@ -404,10 +407,9 @@ async def cmd_rules(update: Update, context: ContextTypes.DEFAULT_TYPE):
 Правила могут изменяться и дополняться."""
     await update.message.reply_text(rules_text)
 
-# ==================== ОБРАБОТЧИК НОВЫХ УЧАСТНИКОВ (выдача тегов и прав) ====================
+# ==================== ОБРАБОТЧИК НОВЫХ УЧАСТНИКОВ ====================
 
 async def handle_new_member(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Выдаёт тег 'бибизяна' и настраивает права новому участнику"""
     for member in update.message.new_chat_members:
         user_id = member.id
         chat_id = update.effective_chat.id
@@ -438,27 +440,27 @@ async def handle_new_member(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except:
             pass
 
-# ==================== КОМАНДЫ НАКАЗАНИЙ ====================
+# ==================== КОМАНДЫ НАКАЗАНИЙ (РАБОТАЮТ ИЗ ГРУППЫ И ЛИЧКИ) ====================
 
 async def cmd_mute(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await is_admin(update, context):
         return
     
+    global DEFAULT_CHAT_ID
+    
     admin = update.effective_user
     target, user_id = await get_target_from_command(update, context)
     
-    # Если команда из лички — берём chat_id из аргументов или просим указать
+    # Определяем chat_id
     chat_id = update.effective_chat.id
+    
+    # Если команда из лички
     if update.effective_chat.type == "private":
-        if context.args and len(context.args) > 1:
-            # Пробуем найти группу по ID (если указан)
-            try:
-                chat_id = int(context.args[-1])
-            except:
-                await context.bot.send_message(chat_id=update.effective_user.id, text="Укажите ID группы или выполняйте команду в группе.")
-                return
+        # Если есть сохранённая группа
+        if DEFAULT_CHAT_ID:
+            chat_id = DEFAULT_CHAT_ID
         else:
-            await context.bot.send_message(chat_id=update.effective_user.id, text="Выполняйте команду в группе или укажите ID группы.")
+            await context.bot.send_message(chat_id=update.effective_user.id, text="Сначала добавьте бота в группу и напишите там /setchat")
             return
     
     if not target and not user_id:
@@ -496,25 +498,21 @@ async def cmd_mute(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         await context.bot.send_message(chat_id=update.effective_user.id, text=f"Ошибка: {e}")
 
-# Остальные команды (unmute, ban, unban, kick, warn, unwarn) - аналогично, требуют chat_id
-
 async def cmd_unmute(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await is_admin(update, context):
         return
+    
+    global DEFAULT_CHAT_ID
     
     admin = update.effective_user
     target, user_id = await get_target_from_command(update, context)
     
     chat_id = update.effective_chat.id
     if update.effective_chat.type == "private":
-        if context.args and len(context.args) > 1:
-            try:
-                chat_id = int(context.args[-1])
-            except:
-                await context.bot.send_message(chat_id=update.effective_user.id, text="Укажите ID группы.")
-                return
+        if DEFAULT_CHAT_ID:
+            chat_id = DEFAULT_CHAT_ID
         else:
-            await context.bot.send_message(chat_id=update.effective_user.id, text="Выполняйте команду в группе или укажите ID группы.")
+            await context.bot.send_message(chat_id=update.effective_user.id, text="Сначала добавьте бота в группу и напишите там /setchat")
             return
     
     if not target and not user_id:
@@ -549,19 +547,17 @@ async def cmd_ban(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await is_admin(update, context):
         return
     
+    global DEFAULT_CHAT_ID
+    
     admin = update.effective_user
     target, user_id = await get_target_from_command(update, context)
     
     chat_id = update.effective_chat.id
     if update.effective_chat.type == "private":
-        if context.args and len(context.args) > 1:
-            try:
-                chat_id = int(context.args[-1])
-            except:
-                await context.bot.send_message(chat_id=update.effective_user.id, text="Укажите ID группы.")
-                return
+        if DEFAULT_CHAT_ID:
+            chat_id = DEFAULT_CHAT_ID
         else:
-            await context.bot.send_message(chat_id=update.effective_user.id, text="Выполняйте команду в группе или укажите ID группы.")
+            await context.bot.send_message(chat_id=update.effective_user.id, text="Сначала добавьте бота в группу и напишите там /setchat")
             return
     
     if not target and not user_id:
@@ -599,19 +595,17 @@ async def cmd_unban(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await is_admin(update, context):
         return
     
+    global DEFAULT_CHAT_ID
+    
     admin = update.effective_user
     target, user_id = await get_target_from_command(update, context)
     
     chat_id = update.effective_chat.id
     if update.effective_chat.type == "private":
-        if context.args and len(context.args) > 1:
-            try:
-                chat_id = int(context.args[-1])
-            except:
-                await context.bot.send_message(chat_id=update.effective_user.id, text="Укажите ID группы.")
-                return
+        if DEFAULT_CHAT_ID:
+            chat_id = DEFAULT_CHAT_ID
         else:
-            await context.bot.send_message(chat_id=update.effective_user.id, text="Выполняйте команду в группе или укажите ID группы.")
+            await context.bot.send_message(chat_id=update.effective_user.id, text="Сначала добавьте бота в группу и напишите там /setchat")
             return
     
     if not target and not user_id:
@@ -644,19 +638,17 @@ async def cmd_kick(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await is_admin(update, context):
         return
     
+    global DEFAULT_CHAT_ID
+    
     admin = update.effective_user
     target, user_id = await get_target_from_command(update, context)
     
     chat_id = update.effective_chat.id
     if update.effective_chat.type == "private":
-        if context.args and len(context.args) > 1:
-            try:
-                chat_id = int(context.args[-1])
-            except:
-                await context.bot.send_message(chat_id=update.effective_user.id, text="Укажите ID группы.")
-                return
+        if DEFAULT_CHAT_ID:
+            chat_id = DEFAULT_CHAT_ID
         else:
-            await context.bot.send_message(chat_id=update.effective_user.id, text="Выполняйте команду в группе или укажите ID группы.")
+            await context.bot.send_message(chat_id=update.effective_user.id, text="Сначала добавьте бота в группу и напишите там /setchat")
             return
     
     if not target:
@@ -682,19 +674,17 @@ async def cmd_warn(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await is_admin(update, context):
         return
     
+    global DEFAULT_CHAT_ID
+    
     admin = update.effective_user
     target, user_id = await get_target_from_command(update, context)
     
     chat_id = update.effective_chat.id
     if update.effective_chat.type == "private":
-        if context.args and len(context.args) > 1:
-            try:
-                chat_id = int(context.args[-1])
-            except:
-                await context.bot.send_message(chat_id=update.effective_user.id, text="Укажите ID группы.")
-                return
+        if DEFAULT_CHAT_ID:
+            chat_id = DEFAULT_CHAT_ID
         else:
-            await context.bot.send_message(chat_id=update.effective_user.id, text="Выполняйте команду в группе или укажите ID группы.")
+            await context.bot.send_message(chat_id=update.effective_user.id, text="Сначала добавьте бота в группу и напишите там /setchat")
             return
     
     if not target and not user_id:
@@ -722,19 +712,17 @@ async def cmd_unwarn(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await is_admin(update, context):
         return
     
+    global DEFAULT_CHAT_ID
+    
     admin = update.effective_user
     target, user_id = await get_target_from_command(update, context)
     
     chat_id = update.effective_chat.id
     if update.effective_chat.type == "private":
-        if context.args and len(context.args) > 1:
-            try:
-                chat_id = int(context.args[-1])
-            except:
-                await context.bot.send_message(chat_id=update.effective_user.id, text="Укажите ID группы.")
-                return
+        if DEFAULT_CHAT_ID:
+            chat_id = DEFAULT_CHAT_ID
         else:
-            await context.bot.send_message(chat_id=update.effective_user.id, text="Выполняйте команду в группе или укажите ID группы.")
+            await context.bot.send_message(chat_id=update.effective_user.id, text="Сначала добавьте бота в группу и напишите там /setchat")
             return
     
     if not target and not user_id:
@@ -754,6 +742,19 @@ async def cmd_unwarn(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except:
         pass
     await send_admin_log(context, f"CLEAR WARNINGS\nAdmin: @{admin.username or admin.first_name}\nTarget: @{name}")
+
+async def cmd_setchat(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Сохраняет ID группы для команд из лички"""
+    global DEFAULT_CHAT_ID
+    if not await is_admin(update, context):
+        return
+    
+    if update.effective_chat.type == "private":
+        await context.bot.send_message(chat_id=update.effective_user.id, text="Эта команда работает только в группе.")
+        return
+    
+    DEFAULT_CHAT_ID = update.effective_chat.id
+    await update.message.reply_text(f"Группа сохранена. Теперь можно писать команды в личку боту.")
 
 # ==================== ОТКРЕПЛЕНИЕ СООБЩЕНИЙ ====================
 
@@ -892,6 +893,7 @@ app.add_handler(CommandHandler("start", cmd_start))
 app.add_handler(CommandHandler("help", cmd_help))
 app.add_handler(CommandHandler("rules", cmd_rules))
 app.add_handler(CommandHandler("id", cmd_id))
+app.add_handler(CommandHandler("setchat", cmd_setchat))
 app.add_handler(CommandHandler("mute", cmd_mute))
 app.add_handler(CommandHandler("unmute", cmd_unmute))
 app.add_handler(CommandHandler("ban", cmd_ban))
