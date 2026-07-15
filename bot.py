@@ -7,8 +7,7 @@ import sqlite3
 from typing import Dict, Optional
 from telegram import (
     Update, ChatPermissions, BotCommand, InlineKeyboardButton,
-    InlineKeyboardMarkup, BotCommandScopeAllGroupChats, BotCommandScopeAllPrivateChats,
-    BotCommandScopeChat
+    InlineKeyboardMarkup, BotCommandScopeAllGroupChats, BotCommandScopeAllPrivateChats
 )
 from telegram.ext import (
     Application, CommandHandler, MessageHandler, filters,
@@ -20,7 +19,6 @@ logging.basicConfig(level=logging.WARNING, format='%(asctime)s - %(name)s - %(le
 logger = logging.getLogger(__name__)
 
 TOKEN = "8637462837:AAFygcu0eLNbXwhOMRPwuDwiry_bx8ij5KM"
-OWNER_ID = 5460879396
 ADMIN_IDS = {5460879396, 8176145729, 1087968824}
 FLOOD_LIMIT = 8
 FLOOD_TIME = 15
@@ -29,9 +27,7 @@ ADMIN_MENTION = "Если заметите баги у бота, пишите @y
 DISCUSSION_CHAT_ID = -1004328889951
 
 ADMIN_CACHE = {}
-USER_CACHE = {}
 ADMIN_CACHE_TTL = 30
-USER_CACHE_TTL = 60
 
 # ==================== БАЗА ДАННЫХ ====================
 class Database:
@@ -49,9 +45,6 @@ class Database:
                 )
             ''')
             conn.execute("CREATE INDEX IF NOT EXISTS idx_warns_user ON warns(user_id, chat_id)")
-            conn.execute('''
-                CREATE TABLE IF NOT EXISTS admins (user_id INTEGER PRIMARY KEY)
-            ''')
 
     def _connect(self):
         return sqlite3.connect(self.db_path)
@@ -82,26 +75,6 @@ class Database:
     def reset_all_warns(self, user_id, chat_id):
         with self._connect() as conn:
             conn.execute('DELETE FROM warns WHERE user_id=? AND chat_id=?', (user_id, chat_id))
-
-    def add_admin(self, user_id: int) -> bool:
-        with self._connect() as conn:
-            try:
-                conn.execute('INSERT INTO admins (user_id) VALUES (?)', (user_id,))
-                conn.commit()
-                return True
-            except sqlite3.IntegrityError:
-                return False
-
-    def remove_admin(self, user_id: int) -> bool:
-        with self._connect() as conn:
-            cur = conn.execute('DELETE FROM admins WHERE user_id=?', (user_id,))
-            conn.commit()
-            return cur.rowcount > 0
-
-    def get_admins(self) -> set:
-        with self._connect() as conn:
-            cur = conn.execute('SELECT user_id FROM admins')
-            return {row[0] for row in cur.fetchall()}
 
 db = Database()
 
@@ -167,16 +140,6 @@ def format_duration(seconds: int) -> str:
     return f"{seconds} секунд"
 
 # ==================== КЭШ ====================
-def get_cached_user(user_id: int):
-    if user_id in USER_CACHE:
-        data, ts = USER_CACHE[user_id]
-        if time.time() - ts < USER_CACHE_TTL: return data
-        del USER_CACHE[user_id]
-    return None
-
-def set_cached_user(user_id: int, data: dict):
-    USER_CACHE[user_id] = (data, time.time())
-
 def get_cached_admin_status(user_id: int, chat_id: int) -> Optional[bool]:
     key = f"{user_id}_{chat_id}"
     if key in ADMIN_CACHE:
@@ -188,13 +151,13 @@ def get_cached_admin_status(user_id: int, chat_id: int) -> Optional[bool]:
 def set_cached_admin_status(user_id: int, chat_id: int, status: bool):
     ADMIN_CACHE[f"{user_id}_{chat_id}"] = (status, time.time())
 
-# ==================== ПРОВЕРКА АДМИНА И СОЗДАТЕЛЯ ====================
+# ==================== ПРОВЕРКА АДМИНА ====================
 async def is_command_from_real_admin(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
     if not update.message or not update.effective_user: return False
     user_id = update.effective_user.id
     chat_id = update.effective_chat.id
 
-    if user_id in ADMIN_IDS or user_id in db.get_admins(): return True
+    if user_id in ADMIN_IDS: return True
 
     cached = get_cached_admin_status(user_id, chat_id)
     if cached is not None: return cached
@@ -206,23 +169,6 @@ async def is_command_from_real_admin(update: Update, context: ContextTypes.DEFAU
         return is_admin
     except:
         set_cached_admin_status(user_id, chat_id, False)
-        return False
-
-async def is_group_creator(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
-    """Определяет реального создателя группы даже при анонимности"""
-    if not update.message: return False
-    chat_id = update.effective_chat.id
-    user_id = update.effective_user.id
-
-    if user_id == OWNER_ID: return True
-
-    try:
-        chat = await context.bot.get_chat(chat_id)
-        if hasattr(chat, 'creator') and chat.creator and chat.creator.id == user_id:
-            return True
-        member = await context.bot.get_chat_member(chat_id, user_id)
-        return member.status == "creator"
-    except:
         return False
 
 # ==================== МУТ И ФЛУД ====================
@@ -275,7 +221,7 @@ async def send_approval_request(context, command_type, target_name, target_id, d
 
     text = f"ЗАПРОС НА {command_type.upper()}\n\nКто запросил: @{requester_name} (ID: {requester_id})\nКого: @{target_name} (ID: {target_id})\nВремя: {duration_text}\nЧат: {chat_id}"
 
-    all_admins = list(ADMIN_IDS | db.get_admins())
+    all_admins = list(ADMIN_IDS)
     for admin_id in all_admins:
         try:
             msg = await context.bot.send_message(admin_id, text, reply_markup=reply_markup)
@@ -395,10 +341,7 @@ async def cmd_help(update, context):
         "/warn [user] - предупреждение\n"
         "/unwarn [user] - снять предупреждения\n"
         "/id - показать ID\n"
-        "/kick [user] - кикнуть\n"
-        "/addadmin [id] - добавить админа бота\n"
-        "/removeadmin [id] - удалить админа бота\n"
-        "/admins - список админов бота\n\n"
+        "/kick [user] - кикнуть\n\n"
         "Время: 10s, 5m, 2h, 1d, 0 - навсегда"
     )
     try:
@@ -416,96 +359,6 @@ async def cmd_rules(update, context):
         "Правила могут изменяться и дополняться."
     )
 
-async def cmd_addadmin(update, context):
-    chat_id = update.effective_chat.id
-    user_id = update.effective_user.id
-
-    if not await is_group_creator(update, context):
-        await update.message.reply_text("Только создатель группы может использовать эту команду.")
-        return
-
-    if not context.args:
-        await update.message.reply_text("Использование: /addadmin [id]")
-        return
-
-    try:
-        new_admin_id = int(context.args[0])
-    except ValueError:
-        await update.message.reply_text("Ошибка: укажите числовой ID.")
-        return
-
-    try:
-        user = await context.bot.get_chat(new_admin_id)
-        name = user.username or user.first_name or str(new_admin_id)
-    except:
-        await update.message.reply_text(f"Ошибка: пользователь с ID {new_admin_id} не найден.")
-        return
-
-    if new_admin_id == user_id:
-        await update.message.reply_text("Нельзя добавить самого себя.")
-        return
-
-    if new_admin_id in ADMIN_IDS:
-        await update.message.reply_text(f"@{name} уже является владельцем бота.")
-        return
-
-    if db.add_admin(new_admin_id):
-        await update.message.reply_text(f"Админ @{name} (ID: {new_admin_id}) добавлен.")
-    else:
-        await update.message.reply_text(f"Админ @{name} (ID: {new_admin_id}) уже существует.")
-
-async def cmd_removeadmin(update, context):
-    chat_id = update.effective_chat.id
-    user_id = update.effective_user.id
-
-    if not await is_group_creator(update, context):
-        await update.message.reply_text("Только создатель группы может использовать эту команду.")
-        return
-
-    if not context.args:
-        await update.message.reply_text("Использование: /removeadmin [id]")
-        return
-
-    try:
-        admin_id = int(context.args[0])
-    except ValueError:
-        await update.message.reply_text("Ошибка: укажите числовой ID.")
-        return
-
-    if admin_id in ADMIN_IDS:
-        await update.message.reply_text("Нельзя удалить владельца бота.")
-        return
-
-    if db.remove_admin(admin_id):
-        await update.message.reply_text(f"Админ с ID {admin_id} удалён.")
-    else:
-        await update.message.reply_text(f"Админ с ID {admin_id} не найден.")
-
-async def cmd_admins(update, context):
-    if not await is_command_from_real_admin(update, context):
-        await update.message.reply_text("У вас нет прав для этой команды.")
-        return
-    db_admins = db.get_admins()
-    if not db_admins:
-        await update.message.reply_text("Нет добавленных админов. Только владельцы.")
-        return
-    text = "Админы бота:\n\n"
-    for admin_id in db_admins:
-        cached = get_cached_user(admin_id)
-        if cached:
-            name = cached.get("name", str(admin_id))
-            text += f"@{name} (ID: {admin_id})\n"
-        else:
-            try:
-                user = await context.bot.get_chat(admin_id)
-                name = user.username or user.first_name or str(admin_id)
-                set_cached_user(admin_id, {"name": name})
-                text += f"@{name} (ID: {admin_id})\n"
-            except:
-                text += f"{admin_id} (недоступен)\n"
-    text += f"\nВладельцы: {', '.join([str(uid) for uid in ADMIN_IDS])}"
-    await update.message.reply_text(text)
-
 # ==================== ОБРАБОТЧИК КНОПОК ====================
 async def handle_callback(update, context):
     query = update.callback_query
@@ -515,7 +368,7 @@ async def handle_callback(update, context):
     data = query.data
     admin_id = query.from_user.id
 
-    if admin_id not in ADMIN_IDS and admin_id not in db.get_admins():
+    if admin_id not in ADMIN_IDS:
         await query.edit_message_text("У вас нет прав.")
         return
 
@@ -703,13 +556,9 @@ async def set_commands(app):
         BotCommand("unwarn", "Снять предупреждения"),
         BotCommand("id", "Показать ID"),
         BotCommand("kick", "Кикнуть пользователя"),
-        BotCommand("addadmin", "Добавить админа бота"),
-        BotCommand("removeadmin", "Удалить админа бота"),
-        BotCommand("admins", "Список админов бота"),
     ]
     await app.bot.set_my_commands(commands, scope=BotCommandScopeAllGroupChats())
     await app.bot.set_my_commands(commands, scope=BotCommandScopeAllPrivateChats())
-    await app.bot.set_my_commands(commands, scope=BotCommandScopeChat(chat_id=DISCUSSION_CHAT_ID))
 
 # ==================== ОЧИСТКА ПАМЯТИ ====================
 async def cleanup_memory(context):
@@ -738,9 +587,6 @@ def main():
     app.add_handler(CommandHandler("help", cmd_help))
     app.add_handler(CommandHandler("rules", cmd_rules))
     app.add_handler(CommandHandler("id", cmd_id))
-    app.add_handler(CommandHandler("addadmin", cmd_addadmin))
-    app.add_handler(CommandHandler("removeadmin", cmd_removeadmin))
-    app.add_handler(CommandHandler("admins", cmd_admins))
     app.add_handler(CommandHandler("mute", lambda u,c: handle_command_with_approval(u,c,"mute")))
     app.add_handler(CommandHandler("unmute", lambda u,c: handle_command_with_approval(u,c,"unmute")))
     app.add_handler(CommandHandler("ban", lambda u,c: handle_command_with_approval(u,c,"ban")))
