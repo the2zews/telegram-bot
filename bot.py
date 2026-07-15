@@ -12,6 +12,9 @@ logger = logging.getLogger(__name__)
 
 TOKEN = "8637462837:AAFygcu0eLNbXwhOMRPwuDwiry_bx8ij5KM"
 
+# Твои ID (реальные, не меняются)
+ADMIN_IDS = [5460879396, 8176145729]
+
 # Настройки флуда
 FLOOD_LIMIT = 8
 FLOOD_TIME = 15
@@ -252,26 +255,29 @@ def format_duration(seconds: int) -> str:
     else:
         return f"{seconds // 86400} дней"
 
-# ==================== ПРОВЕРКА АДМИНА (РАБОТАЕТ С АНОНИМНОСТЬЮ) ====================
+# ==================== ПРОВЕРКА АДМИНА ====================
 
 async def is_admin(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
     if not update.effective_user:
         return False
     
     user_id = update.effective_user.id
-    chat_id = update.effective_chat.id
 
-    # Если это личка — считаем админом (для удобства)
+    # Проверяем по списку ID
+    if user_id in ADMIN_IDS:
+        return True
+
+    # Если личка — пропускаем
     if update.effective_chat.type == "private":
         return True
 
-    # Проверяем статус в группе — работает даже с анонимностью
+    # Проверка статуса (если анонимность выключена)
     try:
-        member = await context.bot.get_chat_member(chat_id, user_id)
+        member = await context.bot.get_chat_member(update.effective_chat.id, user_id)
         if member.status in ['administrator', 'creator']:
             return True
-    except Exception as e:
-        logger.error(f"Ошибка проверки статуса: {e}")
+    except:
+        pass
 
     return False
 
@@ -366,15 +372,15 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await context.bot.send_message(chat_id=update.effective_user.id, text="Бот-модератор активирован. Используйте /help для списка команд.")
 
 async def cmd_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await is_admin(update, context):
-        return
+    """Показывает ID пользователя (доступно всем)"""
     if update.message.reply_to_message:
         target = update.message.reply_to_message.from_user
         text = f"ID пользователя @{target.username or target.first_name}: {target.id}"
     else:
         user_id = update.effective_user.id
         text = f"Ваш ID: {user_id}"
-    await context.bot.send_message(chat_id=update.effective_user.id, text=text)
+    
+    await update.message.reply_text(text)
 
 async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await is_admin(update, context):
@@ -388,7 +394,7 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
 /unban [user] - разблокировать
 /warn [user] - выдать предупреждение
 /unwarn [user] - снять предупреждения
-/id - показать ID пользователя (ответьте на сообщение)
+/id - показать ID пользователя (доступно всем, ответьте на сообщение)
 /kick [user] - удалить из группы
 
 Как указать пользователя:
