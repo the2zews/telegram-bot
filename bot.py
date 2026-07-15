@@ -263,7 +263,7 @@ async def send_with_counter(context, chat_id, text):
     await context.bot.send_message(chat_id=chat_id, text=text)
     
     if MESSAGE_COUNTER % 4 == 0:
-        await context.bot.send_message(chat_id=chat_id, text="Если заметите баги или ошибки, просьба написать админу о них @yabrad")
+        await context.bot.send_message(chat_id=chat_id, text=ADMIN_MENTION)
 
 # ==================== ОТПРАВКА ЗАПРОСА АДМИНАМ ====================
 
@@ -540,7 +540,7 @@ async def handle_callback(update, context):
     admin_id = update.effective_user.id
     
     if admin_id not in ADMIN_IDS:
-        await query.edit_message_text("У вас нет прав для подтверждения команд.")
+        await query.edit_message_text("У вас нет прав.")
         return
     
     if not data.startswith('a_') and not data.startswith('d_'):
@@ -551,7 +551,7 @@ async def handle_callback(update, context):
     request_id = data[2:]
     
     if request_id not in PENDING_COMMANDS:
-        await query.edit_message_text("Запрос устарел или уже обработан.")
+        await query.edit_message_text("Запрос устарел.")
         return
     
     cmd_data = PENDING_COMMANDS[request_id]
@@ -560,6 +560,8 @@ async def handle_callback(update, context):
     chat_id = cmd_data["chat_id"]
     duration = cmd_data["duration"]
     requester_id = cmd_data["requester_id"]
+    
+    del PENDING_COMMANDS[request_id]
     
     if action == 'a':
         try:
@@ -573,57 +575,56 @@ async def handle_callback(update, context):
                 )
                 await send_with_counter(context, chat_id, f"Пользователь замучен на {duration_text}.\nПравила: /rules")
                 db.reset_all_warns(target_id, chat_id)
-                await send_admin_log(context, f"MUTE\nAdmin: @{query.from_user.username or query.from_user.first_name}\nTarget ID: {target_id}\nDuration: {duration_text}")
                 
             elif command_type == "unmute":
                 remove_mute(target_id, chat_id)
                 await context.bot.restrict_chat_member(chat_id, target_id, permissions=ChatPermissions(can_send_messages=True))
                 await send_with_counter(context, chat_id, f"Мут снят.\nПравила: /rules")
-                await send_admin_log(context, f"UNMUTE\nAdmin: @{query.from_user.username or query.from_user.first_name}\nTarget ID: {target_id}")
                 
             elif command_type == "ban":
+                bot_user = await context.bot.get_me()
+                if target_id == bot_user.id:
+                    await query.edit_message_text("Нельзя забанить бота.")
+                    return
                 duration_text = format_duration(duration) if duration > 0 else "навсегда"
                 await context.bot.ban_chat_member(chat_id, target_id, until_date=int(time.time()) + duration if duration > 0 else None)
                 await send_with_counter(context, chat_id, f"Пользователь забанен на {duration_text}.\nПравила: /rules")
                 db.reset_all_warns(target_id, chat_id)
-                await send_admin_log(context, f"BAN\nAdmin: @{query.from_user.username or query.from_user.first_name}\nTarget ID: {target_id}\nDuration: {duration_text}")
                 
             elif command_type == "unban":
                 await context.bot.unban_chat_member(chat_id, target_id)
                 await send_with_counter(context, chat_id, f"Бан снят.\nПравила: /rules")
-                await send_admin_log(context, f"UNBAN\nAdmin: @{query.from_user.username or query.from_user.first_name}\nTarget ID: {target_id}")
                 
             elif command_type == "kick":
                 await context.bot.ban_chat_member(chat_id, target_id)
                 await context.bot.unban_chat_member(chat_id, target_id)
                 await send_with_counter(context, chat_id, f"Пользователь кикнут.\nПравила: /rules")
                 db.reset_all_warns(target_id, chat_id)
-                await send_admin_log(context, f"KICK\nAdmin: @{query.from_user.username or query.from_user.first_name}\nTarget ID: {target_id}")
                 
             elif command_type == "warn":
                 new_count = db.add_warn(target_id, chat_id, "insult")
                 await send_with_counter(context, chat_id, f"Пользователь получил предупреждение ({new_count}).\nПравила: /rules")
-                await send_admin_log(context, f"WARN\nAdmin: @{query.from_user.username or query.from_user.first_name}\nTarget ID: {target_id}\nCount: {new_count}")
                 
             elif command_type == "unwarn":
                 db.reset_all_warns(target_id, chat_id)
                 await send_with_counter(context, chat_id, f"Предупреждения сняты.\nПравила: /rules")
-                await send_admin_log(context, f"UNWARN\nAdmin: @{query.from_user.username or query.from_user.first_name}\nTarget ID: {target_id}")
                 
         except Exception as e:
-            await query.edit_message_text(f"Ошибка выполнения: {e}")
+            await query.edit_message_text(f"Ошибка: {e}")
             return
         
-        await query.edit_message_text(f"Команда {command_type} подтверждена и выполнена.")
-        del PENDING_COMMANDS[request_id]
+        await query.edit_message_text(f"Команда {command_type} выполнена.")
+        try:
+            await context.bot.send_message(chat_id=requester_id, text=f"Ваш запрос на {command_type} выполнен.")
+        except:
+            pass
         
     elif action == 'd':
         await query.edit_message_text(f"Команда {command_type} отклонена.")
         try:
-            await context.bot.send_message(chat_id=requester_id, text=f"Ваш запрос на {command_type} был отклонен.")
+            await context.bot.send_message(chat_id=requester_id, text=f"Ваш запрос на {command_type} отклонен.")
         except:
             pass
-        del PENDING_COMMANDS[request_id]
 
 # ==================== ОБРАБОТЧИК НОВЫХ УЧАСТНИКОВ ====================
 
@@ -647,10 +648,11 @@ async def handle_new_member(update, context):
         except:
             pass
 
-# ==================== ОТКРЕПЛЕНИЕ ====================
+# ==================== ОТКРЕПЛЕНИЕ СООБЩЕНИЙ ====================
 
 async def handle_pinned_message(update, context):
     chat_id = update.effective_chat.id
+    
     try:
         chat = await context.bot.get_chat(chat_id)
         if not chat.pinned_message:
@@ -658,14 +660,18 @@ async def handle_pinned_message(update, context):
         pinned_msg_id = chat.pinned_message.message_id
     except:
         return
+    
     if pinned_messages.get(chat_id) == pinned_msg_id:
         return
+    
     try:
-        await context.bot.unpin_chat_message(chat_id)
+        await context.bot.unpin_chat_message(chat_id=chat_id)
         pinned_messages[chat_id] = pinned_msg_id
+        
+        logger.info(f"Сообщение {pinned_msg_id} откреплено в чате {chat_id}")
+        
         if update.effective_user and is_admin_user(update.effective_user.id):
-            await update.effective_user.send_message("Сообщение откреплено. Закрепите повторно для постоянного.")
-        logger.info(f"Сообщение {pinned_msg_id} откреплено в {chat_id}")
+            await update.effective_user.send_message("Сообщение откреплено. Если хотите закрепить навсегда — закрепите повторно.")
     except Exception as e:
         logger.error(f"Ошибка открепления: {e}")
 
@@ -744,6 +750,22 @@ async def handle_message(update, context):
             db.reset_all_warns(user_id, chat_id)
             await send_admin_log(context, f"AUTO BAN - 18+\nTarget: @{name}")
         return
+
+# ==================== НАСТРОЙКА ПОДСКАЗОК КОМАНД (УПРОЩЁННЫЙ ВАРИАНТ) ====================
+
+async def set_commands(app):
+    commands = [
+        BotCommand("rules", "Правила группы"),
+        BotCommand("mute", "Мут пользователя"),
+        BotCommand("unmute", "Снять мут"),
+        BotCommand("ban", "Забанить пользователя"),
+        BotCommand("unban", "Снять бан"),
+        BotCommand("warn", "Предупреждение"),
+        BotCommand("unwarn", "Снять предупреждения"),
+        BotCommand("id", "Показать ID"),
+        BotCommand("kick", "Кикнуть пользователя"),
+    ]
+    await app.bot.set_my_commands(commands)
 
 # ==================== ЗАПУСК ====================
 
