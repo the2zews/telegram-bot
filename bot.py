@@ -390,51 +390,75 @@ async def cmd_rules(update, context):
     )
 
 async def cmd_addadmin(update, context):
+    chat_id = update.effective_chat.id
     user_id = update.effective_user.id
-    if user_id != OWNER_ID:
-        await update.message.reply_text("Только владелец бота может использовать эту команду.")
+    
+    try:
+        member = await context.bot.get_chat_member(chat_id, user_id)
+        if member.status != "creator":
+            await update.message.reply_text("Только создатель группы может использовать эту команду.")
+            return
+    except:
+        await update.message.reply_text("Не удалось проверить статус.")
         return
+    
     if not context.args:
         await update.message.reply_text("Использование: /addadmin [id]")
         return
+    
     try:
         new_admin_id = int(context.args[0])
     except ValueError:
         await update.message.reply_text("Ошибка: укажите числовой ID.")
         return
+    
     try:
         user = await context.bot.get_chat(new_admin_id)
         name = user.username or user.first_name or str(new_admin_id)
     except:
         await update.message.reply_text(f"Ошибка: пользователь с ID {new_admin_id} не найден.")
         return
+    
     if new_admin_id == user_id:
         await update.message.reply_text("Нельзя добавить самого себя.")
         return
+    
     if new_admin_id in ADMIN_IDS:
         await update.message.reply_text(f"@{name} уже является владельцем бота.")
         return
+    
     if db.add_admin(new_admin_id):
         await update.message.reply_text(f"Админ @{name} (ID: {new_admin_id}) добавлен.")
     else:
         await update.message.reply_text(f"Админ @{name} (ID: {new_admin_id}) уже существует.")
 
 async def cmd_removeadmin(update, context):
+    chat_id = update.effective_chat.id
     user_id = update.effective_user.id
-    if user_id != OWNER_ID:
-        await update.message.reply_text("Только владелец бота может использовать эту команду.")
+    
+    try:
+        member = await context.bot.get_chat_member(chat_id, user_id)
+        if member.status != "creator":
+            await update.message.reply_text("Только создатель группы может использовать эту команду.")
+            return
+    except:
+        await update.message.reply_text("Не удалось проверить статус.")
         return
+    
     if not context.args:
         await update.message.reply_text("Использование: /removeadmin [id]")
         return
+    
     try:
         admin_id = int(context.args[0])
     except ValueError:
         await update.message.reply_text("Ошибка: укажите числовой ID.")
         return
+    
     if admin_id in ADMIN_IDS:
         await update.message.reply_text("Нельзя удалить владельца бота.")
         return
+    
     if db.remove_admin(admin_id):
         await update.message.reply_text(f"Админ с ID {admin_id} удалён.")
     else:
