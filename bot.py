@@ -10,7 +10,7 @@ from telegram import (
 )
 from telegram.ext import (
     Application, CommandHandler, MessageHandler, filters,
-    ContextTypes, CallbackQueryHandler
+    ContextTypes, CallbackQueryHandler, PicklePersistence
 )
 from telegram.constants import ParseMode
 
@@ -452,77 +452,21 @@ async def handle_pinned_message(update, context):
         except Exception as e:
             logger.error(f"Ошибка открепления: {e}")
 
-# ==================== ОСНОВНАЯ ОБРАБОТКА ====================
+# ==================== ОЧИСТКА ПАМЯТИ (JOBQUEUE) ====================
 
-async def handle_message(update, context):
-    if not update.message or not update.effective_user or update.effective_user.is_bot:
-        return
+async def cleanup_memory(context: ContextTypes.DEFAULT_TYPE):
+    """Очищает старые записи для экономии памяти"""
+    # Очищаем старые мут-записи (которые уже истекли)
+    now = time.time()
+    expired_keys = [k for k, v in muted_users.items() if v < now]
+    for k in expired_keys:
+        muted_users.pop(k, None)
     
-    user_id = update.effective_user.id
-    chat_id = update.effective_chat.id
+    # Очищаем историю сообщений, если она слишком большая
+    if len(user_messages) > 100:
+        user_messages.clear()
     
-    if await is_command_from_real_admin(update, context):
-        return
-    
-    if is_muted(user_id, chat_id):
-        try:
-            await update.message.delete()
-        except:
-            pass
-        return
-    
-    text = update.message.text or update.message.caption or ""
-    
-    if detect_link(text):
-        await update.message.delete()
-        await send_with_counter(context, chat_id, f"@{update.effective_user.username or update.effective_user.first_name}, ссылки запрещены.\nПравила: /rules")
-        return
-    
-    if detect_phone(text):
-        await update.message.delete()
-        await send_with_counter(context, chat_id, f"@{update.effective_user.username or update.effective_user.first_name}, номера телефонов запрещены.\nПравила: /rules")
-        return
-    
-    if detect_email(text):
-        await update.message.delete()
-        await send_with_counter(context, chat_id, f"@{update.effective_user.username or update.effective_user.first_name}, email-адреса запрещены.\nПравила: /rules")
-        return
-    
-    if update.message.text and check_flood(user_id, chat_id):
-        duration = FLOOD_MUTE_DURATION
-        set_muted(user_id, chat_id, duration)
-        await update.message.delete()
-        await context.bot.restrict_chat_member(chat_id, user_id, permissions=ChatPermissions(can_send_messages=False), until_date=int(time.time()) + duration)
-        name = update.effective_user.username or update.effective_user.first_name
-        await send_with_counter(context, chat_id, f"@{name} замучен на 5 минут за флуд.\nПравила: /rules")
-        db.reset_all_warns(user_id, chat_id)
-        return
-    
-    clean = clean_text(text)
-    
-    if contains_word(clean, INSULTS):
-        await update.message.delete()
-        new_count = db.add_warn(user_id, chat_id, "insult")
-        name = update.effective_user.username or update.effective_user.first_name
-        await send_with_counter(context, chat_id, f"@{name} получил предупреждение ({new_count}).")
-        if new_count >= 3:
-            set_muted(user_id, chat_id, 3600)
-            await context.bot.restrict_chat_member(chat_id, user_id, permissions=ChatPermissions(can_send_messages=False), until_date=int(time.time()) + 3600)
-            await send_with_counter(context, chat_id, f"@{name} замучен на 1 час за оскорбления.\nПравила: /rules")
-            db.reset_all_warns(user_id, chat_id)
-        return
-    
-    if contains_word(clean, ADULT_WORDS):
-        await update.message.delete()
-        adult_count = db.add_warn(user_id, chat_id, "adult")
-        name = update.effective_user.username or update.effective_user.first_name
-        if adult_count == 1:
-            await send_with_counter(context, chat_id, f"@{name}, предупреждение за 18+ контент. В следующий раз — бан.\nПравила: /rules")
-        else:
-            await context.bot.ban_chat_member(chat_id, user_id)
-            await send_with_counter(context, chat_id, f"@{name} забанен за 18+ контент (повторное нарушение).\nПравила: /rules")
-            db.reset_all_warns(user_id, chat_id)
-        return
+    logger.info(f"Память очищена. Мутов: {len(muted_users)}, очередей: {len(user_messages)}")
 
 # ==================== ПОДСКАЗКИ ====================
 
@@ -544,7 +488,13 @@ async def set_commands(app):
 # ==================== ЗАПУСК ====================
 
 def main():
-    app = Application.builder().token(TOKEN).build()
+    # PicklePersistence для сохранения данных при перезапуске
+    persistence = PicklePersistence(filepath="bot_data.pickle")
+    
+    app = Application.builder().token(TOKEN).persistence(persistence).build()
+    
+    # JobQueue для очистки памяти
+    app.job_queue.run_repeating(cleanup_memory, interval=300)  # раз в 5 минут
     
     # Команды
     app.add_handler(CommandHandler("start", cmd_start))
@@ -569,7 +519,10 @@ def main():
     app.add_handler(MessageHandler(filters.PHOTO & ~filters.COMMAND, handle_message))
     app.add_handler(MessageHandler(filters.VIDEO & ~filters.COMMAND, handle_message))
     
-    print("Бот запущен (оптимизированный)!")
+    # Устанавливаем команды
+    app.post_init = set_commands
+    
+    print("Бот запущен (оптимизированный + память + сохранение)!")
     app.run_polling(
         allowed_updates=["message", "callback_query", "pinned_message", "chat_member"],
         drop_pending_updates=True,
