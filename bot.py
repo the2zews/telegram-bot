@@ -3,6 +3,8 @@ import re
 import time
 import asyncio
 from collections import defaultdict, deque
+from dataclasses import dataclass
+from typing import Dict, Set, Optional
 import sqlite3
 from telegram import (
     Update, ChatPermissions, BotCommand, InlineKeyboardButton,
@@ -13,19 +15,19 @@ from telegram.ext import (
     ContextTypes, CallbackQueryHandler, PicklePersistence
 )
 from telegram.constants import ParseMode
+from telegram.error import TelegramError
 
 logging.basicConfig(level=logging.WARNING, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
+# ==================== КОНФИГ ====================
+
 TOKEN = "8637462837:AAFygcu0eLNbXwhOMRPwuDwiry_bx8ij5KM"
 ADMIN_IDS = {5460879396, 8176145729, 1087968824}
-
 FLOOD_LIMIT = 8
 FLOOD_TIME = 15
 FLOOD_MUTE_DURATION = 300
 ADMIN_MENTION = "Если заметите баги у бота, пишите админу @yabrad"
-
-# ID твоей группы для JobQueue
 DISCUSSION_CHAT_ID = -1004328889951
 
 # ==================== БАЗА ДАННЫХ ====================
@@ -82,13 +84,22 @@ class Database:
 
 db = Database()
 
-# ==================== ХРАНИЛИЩА ====================
+# ==================== ХРАНИЛИЩА (в bot_data) ====================
 
-muted_users = {}
-user_messages = defaultdict(lambda: deque(maxlen=FLOOD_LIMIT))
-pinned_messages = {}
-MESSAGE_COUNTER = 0
-pending_commands = {}
+def get_muted_users(context: ContextTypes.DEFAULT_TYPE) -> Dict[str, int]:
+    return context.bot_data.setdefault('muted_users', {})
+
+def get_user_messages(context: ContextTypes.DEFAULT_TYPE) -> Dict[int, deque]:
+    return context.bot_data.setdefault('user_messages', defaultdict(lambda: deque(maxlen=FLOOD_LIMIT)))
+
+def get_pinned_messages(context: ContextTypes.DEFAULT_TYPE) -> Dict[int, int]:
+    return context.bot_data.setdefault('pinned_messages', {})
+
+def get_message_counter(context: ContextTypes.DEFAULT_TYPE) -> int:
+    return context.bot_data.get('message_counter', 0)
+
+def set_message_counter(context: ContextTypes.DEFAULT_TYPE, value: int):
+    context.bot_data['message_counter'] = value
 
 # ==================== РЕГУЛЯРКИ ====================
 
@@ -113,13 +124,15 @@ ADULT_WORDS = {"порно", "секс", "насилие", "изнасилова
 def clean_text(text: str) -> str:
     if not text:
         return ""
-    return re.sub(r'[^а-яёa-z0-9]', '', text.lower())
+    text = re.sub(r'[^а-яёa-z0-9]', '', text.lower())
+    trans = str.maketrans("abcdefghijklmnopqrstuvwxyz", "абвгдеёжзийклмнопрстуфхцчшщъыьэюя")
+    return text.translate(trans)
 
 def contains_word(text: str, word_set: set) -> bool:
     if not text:
         return False
     cleaned = clean_text(text)
-    return any(word in cleaned for word in word_set)
+    return any(clean_text(word) in cleaned for word in word_set)
 
 def detect_link(text: str) -> bool:
     return any(p.search(text) for p in LINK_PATTERNS) if text else False
@@ -176,41 +189,47 @@ async def is_command_from_real_admin(update: Update, context: ContextTypes.DEFAU
 
 # ==================== МУТ И ФЛУД ====================
 
-def is_muted(user_id: int, chat_id: int) -> bool:
+def is_muted(context: ContextTypes.DEFAULT_TYPE, user_id: int, chat_id: int) -> bool:
     key = f"{user_id}_{chat_id}"
-    if key in muted_users and muted_users[key] > time.time():
+    muted = get_muted_users(context)
+    if key in muted and muted[key] > time.time():
         return True
-    muted_users.pop(key, None)
+    muted.pop(key, None)
     return False
 
-def set_muted(user_id: int, chat_id: int, duration: int):
-    muted_users[f"{user_id}_{chat_id}"] = time.time() + (duration or 31536000)
+def set_muted(context: ContextTypes.DEFAULT_TYPE, user_id: int, chat_id: int, duration: int):
+    muted = get_muted_users(context)
+    muted[f"{user_id}_{chat_id}"] = time.time() + (duration or 31536000)
 
-def remove_mute(user_id, chat_id):
-    muted_users.pop(f"{user_id}_{chat_id}", None)
+def remove_mute(context: ContextTypes.DEFAULT_TYPE, user_id: int, chat_id: int):
+    muted = get_muted_users(context)
+    muted.pop(f"{user_id}_{chat_id}", None)
 
-def check_flood(user_id, chat_id):
+def check_flood(context: ContextTypes.DEFAULT_TYPE, user_id: int, chat_id: int) -> bool:
     now = time.time()
-    user_messages[user_id].append(now)
-    user_messages[user_id] = [t for t in user_messages[user_id] if now - t <= FLOOD_TIME]
-    if len(user_messages[user_id]) > FLOOD_LIMIT:
-        user_messages[user_id] = []
+    messages = get_user_messages(context)
+    messages[user_id].append(now)
+    while messages[user_id] and messages[user_id][0] < now - FLOOD_TIME:
+        messages[user_id].popleft()
+    if len(messages[user_id]) > FLOOD_LIMIT:
+        messages[user_id] = deque(maxlen=FLOOD_LIMIT)
         return True
     return False
 
 # ==================== ОТПРАВКА ====================
 
-async def send_with_counter(context, chat_id: int, text: str):
-    global MESSAGE_COUNTER
-    MESSAGE_COUNTER += 1
+async def send_with_counter(context: ContextTypes.DEFAULT_TYPE, chat_id: int, text: str):
+    counter = get_message_counter(context) + 1
+    set_message_counter(context, counter)
     await context.bot.send_message(chat_id=chat_id, text=text)
-    if MESSAGE_COUNTER % 4 == 0:
+    if counter % 4 == 0:
         await context.bot.send_message(chat_id=chat_id, text=ADMIN_MENTION)
 
-async def send_approval_request(context, admin_ids, command_type, target_name, target_id, duration, duration_text, requester_name, requester_id, chat_id):
+async def send_approval_request(context: ContextTypes.DEFAULT_TYPE, admin_ids, command_type, target_name, target_id, duration, duration_text, requester_name, requester_id, chat_id):
     request_id = f"{int(time.time())}_{requester_id}_{target_id}"
     
-    pending_commands[request_id] = {
+    pending = context.bot_data.setdefault('pending_commands', {})
+    pending[request_id] = {
         "command_type": command_type,
         "target_id": target_id,
         "chat_id": chat_id,
@@ -236,21 +255,21 @@ async def send_approval_request(context, admin_ids, command_type, target_name, t
     for admin_id in admin_ids:
         try:
             msg = await context.bot.send_message(chat_id=admin_id, text=text, reply_markup=reply_markup)
-            pending_commands[request_id]["message_ids"][admin_id] = msg.message_id
+            pending[request_id]["message_ids"][admin_id] = msg.message_id
         except:
             pass
 
 # ==================== ВЫПОЛНЕНИЕ КОМАНД ====================
 
-async def process_approved_action(context, command_type: str, target_id: int, chat_id: int, duration: int = 0):
+async def process_approved_action(context: ContextTypes.DEFAULT_TYPE, command_type: str, target_id: int, chat_id: int, duration: int = 0):
     if command_type == "mute":
         dur = duration or 31536000
-        set_muted(target_id, chat_id, dur)
+        set_muted(context, target_id, chat_id, dur)
         await context.bot.restrict_chat_member(chat_id, target_id, permissions=ChatPermissions(can_send_messages=False), until_date=int(time.time()) + dur)
         await send_with_counter(context, chat_id, f"Пользователь замучен.\nПравила: /rules")
         db.reset_all_warns(target_id, chat_id)
     elif command_type == "unmute":
-        remove_mute(target_id, chat_id)
+        remove_mute(context, target_id, chat_id)
         await context.bot.restrict_chat_member(chat_id, target_id, permissions=ChatPermissions(can_send_messages=True))
         await send_with_counter(context, chat_id, f"Мут снят.")
     elif command_type == "ban":
@@ -273,7 +292,7 @@ async def process_approved_action(context, command_type: str, target_id: int, ch
         db.reset_all_warns(target_id, chat_id)
         await send_with_counter(context, chat_id, f"Предупреждения сняты.")
 
-async def get_target(update, context):
+async def get_target(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.message.reply_to_message:
         t = update.message.reply_to_message.from_user
         return t, t.id
@@ -288,7 +307,7 @@ async def get_target(update, context):
             continue
     return None, None
 
-async def handle_command_with_approval(update, context, command_type: str):
+async def handle_command_with_approval(update: Update, context: ContextTypes.DEFAULT_TYPE, command_type: str):
     if not update.message:
         return
     
@@ -329,7 +348,7 @@ async def handle_command_with_approval(update, context, command_type: str):
 
 # ==================== КОМАНДЫ ====================
 
-async def cmd_start(update, context):
+async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     if user_id not in ADMIN_IDS:
         return
@@ -338,7 +357,7 @@ async def cmd_start(update, context):
     except:
         pass
 
-async def cmd_id(update, context):
+async def cmd_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.message.reply_to_message:
         target = update.message.reply_to_message.from_user
         text = f"ID: {target.id}"
@@ -346,7 +365,7 @@ async def cmd_id(update, context):
         text = f"Ваш ID: {update.effective_user.id}"
     await update.message.reply_text(text)
 
-async def cmd_help(update, context):
+async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     if user_id not in ADMIN_IDS:
         return
@@ -357,14 +376,14 @@ async def cmd_help(update, context):
     except:
         pass
 
-async def cmd_rules(update, context):
+async def cmd_rules(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "ПРАВИЛА ГРУППЫ\n\n1. Без оскорблений и провокаций\n2. Без 18+ и насилия\n3. Не флудим/не спамим\n4. Не сливаем личные данные\n\nПравила могут изменяться и дополняться."
     )
 
 # ==================== ОБРАБОТЧИК КНОПОК ====================
 
-async def handle_callback(update, context):
+async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     
@@ -384,11 +403,12 @@ async def handle_callback(update, context):
     action = data[0]
     request_id = data[2:]
     
-    if request_id not in pending_commands:
+    pending = context.bot_data.get('pending_commands', {})
+    if request_id not in pending:
         await query.edit_message_text("Запрос устарел.")
         return
     
-    cmd_data = pending_commands.pop(request_id)
+    cmd_data = pending.pop(request_id)
     command_type = cmd_data["command_type"]
     target_id = cmd_data["target_id"]
     chat_id = cmd_data["chat_id"]
@@ -429,13 +449,14 @@ async def handle_callback(update, context):
 
 # ==================== ОТКРЕПЛЕНИЕ ====================
 
-async def handle_pinned_message(update, context):
+async def handle_pinned_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message or not update.message.pinned_message:
         return
 
     chat_id = update.effective_chat.id
     pinned = update.message.pinned_message
 
+    pinned_messages = get_pinned_messages(context)
     if pinned_messages.get(chat_id) == pinned.message_id:
         return
 
@@ -472,7 +493,7 @@ async def unpin_channel_posts(context: ContextTypes.DEFAULT_TYPE):
 
 # ==================== ОСНОВНАЯ ОБРАБОТКА ====================
 
-async def handle_message(update, context):
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message or not update.effective_user or update.effective_user.is_bot:
         return
     
@@ -482,7 +503,7 @@ async def handle_message(update, context):
     if await is_command_from_real_admin(update, context):
         return
     
-    if is_muted(user_id, chat_id):
+    if is_muted(context, user_id, chat_id):
         try:
             await update.message.delete()
         except:
@@ -506,9 +527,9 @@ async def handle_message(update, context):
         await send_with_counter(context, chat_id, f"@{update.effective_user.username or update.effective_user.first_name}, email-адреса запрещены.\nПравила: /rules")
         return
     
-    if update.message.text and check_flood(user_id, chat_id):
+    if update.message.text and check_flood(context, user_id, chat_id):
         duration = FLOOD_MUTE_DURATION
-        set_muted(user_id, chat_id, duration)
+        set_muted(context, user_id, chat_id, duration)
         await update.message.delete()
         await context.bot.restrict_chat_member(chat_id, user_id, permissions=ChatPermissions(can_send_messages=False), until_date=int(time.time()) + duration)
         name = update.effective_user.username or update.effective_user.first_name
@@ -524,7 +545,7 @@ async def handle_message(update, context):
         name = update.effective_user.username or update.effective_user.first_name
         await send_with_counter(context, chat_id, f"@{name} получил предупреждение ({new_count}).")
         if new_count >= 3:
-            set_muted(user_id, chat_id, 3600)
+            set_muted(context, user_id, chat_id, 3600)
             await context.bot.restrict_chat_member(chat_id, user_id, permissions=ChatPermissions(can_send_messages=False), until_date=int(time.time()) + 3600)
             await send_with_counter(context, chat_id, f"@{name} замучен на 1 час за оскорбления.\nПравила: /rules")
             db.reset_all_warns(user_id, chat_id)
@@ -544,7 +565,7 @@ async def handle_message(update, context):
 
 # ==================== ПОДСКАЗКИ ====================
 
-async def set_commands(app):
+async def set_commands(app: Application):
     commands = [
         BotCommand("rules", "Правила группы"),
         BotCommand("mute", "Мут пользователя"),
@@ -559,24 +580,37 @@ async def set_commands(app):
     await app.bot.set_my_commands(commands, scope=BotCommandScopeAllGroupChats())
     await app.bot.set_my_commands(commands, scope=BotCommandScopeAllPrivateChats())
 
+# ==================== POST_INIT ====================
+
+async def post_init(app: Application):
+    await set_commands(app)
+    if app.job_queue:
+        app.job_queue.run_repeating(unpin_channel_posts, interval=8, first=5)
+        app.job_queue.run_repeating(cleanup_memory, interval=300)
+
+# ==================== ОЧИСТКА ПАМЯТИ ====================
+
+async def cleanup_memory(context: ContextTypes.DEFAULT_TYPE):
+    now = time.time()
+    muted = get_muted_users(context)
+    for key in list(muted.keys()):
+        if muted[key] < now:
+            muted.pop(key, None)
+    
+    messages = get_user_messages(context)
+    if len(messages) > 100:
+        messages.clear()
+
 # ==================== ЗАПУСК ====================
 
 def main():
     persistence = PicklePersistence(filepath="bot_data.pickle")
     
-    app = Application.builder().token(TOKEN).persistence(persistence).build()
-    
-    # JobQueue для очистки памяти
-    try:
-        app.job_queue.run_repeating(cleanup_memory, interval=300)
-    except:
-        pass
-    
-    # JobQueue для открепления из канала
-    try:
-        app.job_queue.run_repeating(unpin_channel_posts, interval=8, first=5)
-    except:
-        pass
+    app = Application.builder() \
+        .token(TOKEN) \
+        .persistence(persistence) \
+        .post_init(post_init) \
+        .build()
     
     app.add_handler(CommandHandler("start", cmd_start))
     app.add_handler(CommandHandler("help", cmd_help))
@@ -592,13 +626,10 @@ def main():
     
     app.add_handler(CallbackQueryHandler(handle_callback))
     
-    app.add_handler(MessageHandler(filters.StatusUpdate.NEW_CHAT_MEMBERS, handle_new_member))
     app.add_handler(MessageHandler(filters.StatusUpdate.PINNED_MESSAGE, handle_pinned_message))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     app.add_handler(MessageHandler(filters.PHOTO & ~filters.COMMAND, handle_message))
     app.add_handler(MessageHandler(filters.VIDEO & ~filters.COMMAND, handle_message))
-    
-    app.post_init = set_commands
     
     print("Бот запущен (оптимизированный + память + сохранение + JobQueue)!")
     app.run_polling(
@@ -606,16 +637,6 @@ def main():
         drop_pending_updates=True,
         poll_interval=0.5
     )
-
-# ==================== ОЧИСТКА ПАМЯТИ ====================
-
-async def cleanup_memory(context: ContextTypes.DEFAULT_TYPE):
-    now = time.time()
-    expired_keys = [k for k, v in muted_users.items() if v < now]
-    for k in expired_keys:
-        muted_users.pop(k, None)
-    if len(user_messages) > 100:
-        user_messages.clear()
 
 if __name__ == "__main__":
     main()
