@@ -322,7 +322,7 @@ async def process_approved_action(context, command_type, target_id, chat_id, dur
     elif command_type == "unmute":
         remove_mute(target_id, chat_id)
         await context.bot.restrict_chat_member(chat_id, target_id, permissions=ChatPermissions(can_send_messages=True))
-        await send_with_counter(context, chat_id, f"Мут снят.\nПравила: /rules")
+        await send_with_counter(context, chat_id, f"Мут снят.")
         
     elif command_type == "ban":
         dur = duration if duration > 0 else None
@@ -333,21 +333,21 @@ async def process_approved_action(context, command_type, target_id, chat_id, dur
         
     elif command_type == "unban":
         await context.bot.unban_chat_member(chat_id, target_id)
-        await send_with_counter(context, chat_id, f"Бан снят.\nПравила: /rules")
+        await send_with_counter(context, chat_id, f"Бан снят.")
         
     elif command_type == "kick":
         await context.bot.ban_chat_member(chat_id, target_id)
         await context.bot.unban_chat_member(chat_id, target_id)
-        await send_with_counter(context, chat_id, f"Пользователь кикнут.\nПравила: /rules")
+        await send_with_counter(context, chat_id, f"Пользователь кикнут.")
         db.reset_all_warns(target_id, chat_id)
         
     elif command_type == "warn":
         new_count = db.add_warn(target_id, chat_id, "insult")
-        await send_with_counter(context, chat_id, f"Пользователь получил предупреждение ({new_count}).\nПравила: /rules")
+        await send_with_counter(context, chat_id, f"Пользователь получил предупреждение ({new_count}).")
         
     elif command_type == "unwarn":
         db.reset_all_warns(target_id, chat_id)
-        await send_with_counter(context, chat_id, f"Предупреждения сняты.\nПравила: /rules")
+        await send_with_counter(context, chat_id, f"Предупреждения сняты.")
 
 # ==================== ОБЩАЯ ФУНКЦИЯ ДЛЯ КОМАНД ====================
 
@@ -362,7 +362,6 @@ async def handle_command_with_approval(update, context, command_type):
     
     name = target.username or target.first_name
     
-    # Если админ — выполняем сразу
     if await is_admin_in_chat(context, chat_id, user_id):
         duration = parse_time(update.message.text)
         await process_approved_action(context, command_type, target_id, chat_id, duration)
@@ -370,7 +369,6 @@ async def handle_command_with_approval(update, context, command_type):
         await update.effective_user.send_message(f"Команда {command_type} выполнена.")
         return
     
-    # Если не админ — запрос на подтверждение
     duration = parse_time(update.message.text)
     duration_text = format_duration(duration) if duration > 0 else "навсегда"
     requester_name = update.effective_user.username or update.effective_user.first_name
@@ -632,7 +630,7 @@ async def handle_message(update, context):
         await update.message.delete()
         new_count = db.add_warn(user_id, chat_id, "insult")
         name = update.effective_user.username or update.effective_user.first_name
-        await send_with_counter(context, chat_id, f"@{name} получил предупреждение ({new_count}).\nПравила: /rules")
+        await send_with_counter(context, chat_id, f"@{name} получил предупреждение ({new_count}).")
         await send_admin_log(context, f"AUTO WARN\nTarget: @{name}\nCount: {new_count}")
         if new_count >= 3:
             set_muted(user_id, chat_id, 3600)
