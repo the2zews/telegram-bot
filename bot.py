@@ -422,42 +422,26 @@ async def handle_callback(update, context):
         logger.error(f"Ошибка: {e}")
         await query.edit_message_text(f"Ошибка: {e}")
 
-# ==================== ОТКРЕПЛЕНИЕ (ИСПРАВЛЕНО) ====================
-async def handle_pinned_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Открепляет сообщения из канала в группе обсуждений"""
-    
-    # Проверяем, есть ли закреплённое сообщение
+# ==================== ОТКРЕПЛЕНИЕ ====================
+async def handle_pinned_message(update, context):
     if not update.message or not update.message.pinned_message:
         return
-    
     chat_id = update.effective_chat.id
     pinned = update.message.pinned_message
-    
-    # Если это сообщение уже открепляли — пропускаем
+
     pinned_messages = get_pinned_messages(context)
     if pinned_messages.get(chat_id) == pinned.message_id:
         return
-    
-    # Проверяем, пришло ли сообщение из канала
-    is_from_channel = False
-    
-    # Способ 1: через sender_chat
-    if pinned.sender_chat and pinned.sender_chat.type == "channel":
-        is_from_channel = True
-    
-    # Способ 2: через is_automatic_forward
-    if hasattr(pinned, 'is_automatic_forward') and pinned.is_automatic_forward:
-        is_from_channel = True
-    
-    # Способ 3: проверяем, есть ли у сообщения author_signature (обычно у каналов)
-    if hasattr(pinned, 'author_signature') and pinned.author_signature:
-        is_from_channel = True
-    
+
+    is_from_channel = (
+        pinned.sender_chat and pinned.sender_chat.type == "channel"
+    ) or getattr(pinned, 'is_automatic_forward', False)
+
     if is_from_channel:
         try:
             await context.bot.unpin_chat_message(chat_id=chat_id, message_id=pinned.message_id)
             pinned_messages[chat_id] = pinned.message_id
-            logger.info(f"Откреплено сообщение из канала: {pinned.message_id}")
+            logger.info(f"Откреплено авто-сообщение из канала {pinned.message_id}")
         except Exception as e:
             logger.error(f"Ошибка открепления: {e}")
 
