@@ -352,7 +352,7 @@ async def cmd_help(update, context):
         return
     try:
         await update.effective_user.send_message(
-            "Команды:\n/rules - правила\n/mute [user] [время] - мут\n/unmute [user] - снять мут\n/ban [user] [время] - бан\n/unban [user] - снять бан\n/warn [user] - предупреждение\n/unwarn [user] - снять предупреждения\n/id - показать ID\n/kick [user] - кикнуть\n/tag [user] [тег] - выдать тег\n\nВремя: 10s, 5m, 2h, 1d, 0 - навсегда"
+            "Команды:\n/rules - правила\n/mute [user] [время] - мут\n/unmute [user] - снять мут\n/ban [user] [время] - бан\n/unban [user] - снять бан\n/warn [user] - предупреждение\n/unwarn [user] - снять предупреждения\n/id - показать ID\n/kick [user] - кикнуть\n\nВремя: 10s, 5m, 2h, 1d, 0 - навсегда"
         )
     except:
         pass
@@ -361,60 +361,6 @@ async def cmd_rules(update, context):
     await update.message.reply_text(
         "ПРАВИЛА ГРУППЫ\n\n1. Без оскорблений и провокаций\n2. Без 18+ и насилия\n3. Не флудим/не спамим\n4. Не сливаем личные данные\n\nПравила могут изменяться и дополняться."
     )
-
-# ==================== КОМАНДА ДЛЯ ВЫДАЧИ ТЕГА ====================
-
-async def cmd_tag(update, context):
-    """Выдаёт тег пользователю. Использование: /tag @username [тег]"""
-    
-    # Проверяем, что команду пишет админ
-    if not await is_command_from_real_admin(update, context):
-        await update.message.reply_text("У вас нет прав для этой команды.")
-        return
-    
-    # Проверяем, что есть ответ на сообщение или указан username
-    target = None
-    tag = "бибизяна"  # тег по умолчанию
-    
-    if update.message.reply_to_message:
-        target = update.message.reply_to_message.from_user
-    elif context.args:
-        # Пробуем найти пользователя по username
-        for arg in context.args:
-            if arg.startswith('@'):
-                try:
-                    target = await context.bot.get_chat(arg)
-                    break
-                except:
-                    pass
-            else:
-                # Если аргумент не начинается с @, это может быть тег
-                tag = arg
-    
-    # Если пользователь не найден
-    if not target:
-        await update.message.reply_text("Ошибка: ответьте на сообщение пользователя или укажите @username.")
-        return
-    
-    # Если тег передан как аргумент, используем его
-    for arg in context.args:
-        if not arg.startswith('@') and arg != tag:
-            tag = arg
-            break
-    
-    chat_id = update.effective_chat.id
-    user_id = target.id
-    name = target.username or target.first_name
-    
-    try:
-        await context.bot.set_chat_administrator_custom_title(
-            chat_id=chat_id,
-            user_id=user_id,
-            custom_title=tag
-        )
-        await update.message.reply_text(f"Тег '{tag}' выдан пользователю @{name}.")
-    except Exception as e:
-        await update.message.reply_text(f"Ошибка выдачи тега: {e}")
 
 # ==================== ОБРАБОТЧИК КНОПОК ====================
 
@@ -480,17 +426,6 @@ async def handle_callback(update, context):
     except Exception as e:
         logger.error(f"Ошибка: {e}")
         await query.edit_message_text(f"Ошибка: {e}")
-
-# ==================== НОВЫЙ УЧАСТНИК ====================
-
-async def handle_new_member(update, context):
-    for member in update.message.new_chat_members:
-        user_id = member.id
-        chat_id = update.effective_chat.id
-        try:
-            await context.bot.set_chat_administrator_custom_title(chat_id, user_id, "бибизяна")
-        except Exception as e:
-            logger.error(f"Ошибка выдачи тега: {e}")
 
 # ==================== ОТКРЕПЛЕНИЕ ====================
 
@@ -620,7 +555,6 @@ async def set_commands(app):
         BotCommand("unwarn", "Снять предупреждения"),
         BotCommand("id", "Показать ID"),
         BotCommand("kick", "Кикнуть пользователя"),
-        BotCommand("tag", "Выдать тег пользователю"),
     ]
     await app.bot.set_my_commands(commands, scope=BotCommandScopeAllGroupChats())
     await app.bot.set_my_commands(commands, scope=BotCommandScopeAllPrivateChats())
@@ -648,7 +582,6 @@ def main():
     app.add_handler(CommandHandler("help", cmd_help))
     app.add_handler(CommandHandler("rules", cmd_rules))
     app.add_handler(CommandHandler("id", cmd_id))
-    app.add_handler(CommandHandler("tag", cmd_tag))
     app.add_handler(CommandHandler("mute", lambda u,c: handle_command_with_approval(u,c,"mute")))
     app.add_handler(CommandHandler("unmute", lambda u,c: handle_command_with_approval(u,c,"unmute")))
     app.add_handler(CommandHandler("ban", lambda u,c: handle_command_with_approval(u,c,"ban")))
