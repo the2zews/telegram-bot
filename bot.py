@@ -12,12 +12,6 @@ logger = logging.getLogger(__name__)
 
 TOKEN = "8637462837:AAFygcu0eLNbXwhOMRPwuDwiry_bx8ij5KM"
 
-# Список ID, которые могут управлять ботом
-ADMIN_IDS = [5460879396, 8176145729]
-
-# ID группы, в которой работает бот (твоя группа)
-DEFAULT_CHAT_ID = -1004328889951
-
 # Настройки флуда
 FLOOD_LIMIT = 8
 FLOOD_TIME = 15
@@ -258,17 +252,27 @@ def format_duration(seconds: int) -> str:
     else:
         return f"{seconds // 86400} дней"
 
-# ==================== ПРОВЕРКА АДМИНА ПО ID ====================
+# ==================== ПРОВЕРКА АДМИНА (РАБОТАЕТ С АНОНИМНОСТЬЮ) ====================
 
 async def is_admin(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
     if not update.effective_user:
         return False
     
     user_id = update.effective_user.id
-    
-    if user_id in ADMIN_IDS:
+    chat_id = update.effective_chat.id
+
+    # Если это личка — считаем админом (для удобства)
+    if update.effective_chat.type == "private":
         return True
-    
+
+    # Проверяем статус в группе — работает даже с анонимностью
+    try:
+        member = await context.bot.get_chat_member(chat_id, user_id)
+        if member.status in ['administrator', 'creator']:
+            return True
+    except Exception as e:
+        logger.error(f"Ошибка проверки статуса: {e}")
+
     return False
 
 async def is_target_creator(update: Update, context: ContextTypes.DEFAULT_TYPE, target_user_id: int) -> bool:
@@ -439,7 +443,7 @@ async def handle_new_member(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except:
             pass
 
-# ==================== КОМАНДЫ НАКАЗАНИЙ (РАБОТАЮТ ИЗ ГРУППЫ И ЛИЧКИ) ====================
+# ==================== КОМАНДЫ НАКАЗАНИЙ ====================
 
 async def cmd_mute(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await is_admin(update, context):
@@ -447,10 +451,7 @@ async def cmd_mute(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     admin = update.effective_user
     target, user_id = await get_target_from_command(update, context)
-    
     chat_id = update.effective_chat.id
-    if update.effective_chat.type == "private":
-        chat_id = DEFAULT_CHAT_ID
     
     if not target and not user_id:
         await context.bot.send_message(chat_id=update.effective_user.id, text="Ошибка: ответьте на сообщение или укажите ID.")
@@ -493,10 +494,7 @@ async def cmd_unmute(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     admin = update.effective_user
     target, user_id = await get_target_from_command(update, context)
-    
     chat_id = update.effective_chat.id
-    if update.effective_chat.type == "private":
-        chat_id = DEFAULT_CHAT_ID
     
     if not target and not user_id:
         await context.bot.send_message(chat_id=update.effective_user.id, text="Ошибка: ответьте на сообщение или укажите ID.")
@@ -532,10 +530,7 @@ async def cmd_ban(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     admin = update.effective_user
     target, user_id = await get_target_from_command(update, context)
-    
     chat_id = update.effective_chat.id
-    if update.effective_chat.type == "private":
-        chat_id = DEFAULT_CHAT_ID
     
     if not target and not user_id:
         await context.bot.send_message(chat_id=update.effective_user.id, text="Ошибка: ответьте на сообщение или укажите ID.")
@@ -574,10 +569,7 @@ async def cmd_unban(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     admin = update.effective_user
     target, user_id = await get_target_from_command(update, context)
-    
     chat_id = update.effective_chat.id
-    if update.effective_chat.type == "private":
-        chat_id = DEFAULT_CHAT_ID
     
     if not target and not user_id:
         await context.bot.send_message(chat_id=update.effective_user.id, text="Ошибка: ответьте на сообщение или укажите ID.")
@@ -611,10 +603,7 @@ async def cmd_kick(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     admin = update.effective_user
     target, user_id = await get_target_from_command(update, context)
-    
     chat_id = update.effective_chat.id
-    if update.effective_chat.type == "private":
-        chat_id = DEFAULT_CHAT_ID
     
     if not target:
         await context.bot.send_message(chat_id=update.effective_user.id, text="Ошибка: ответьте на сообщение или укажите ID.")
@@ -641,10 +630,7 @@ async def cmd_warn(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     admin = update.effective_user
     target, user_id = await get_target_from_command(update, context)
-    
     chat_id = update.effective_chat.id
-    if update.effective_chat.type == "private":
-        chat_id = DEFAULT_CHAT_ID
     
     if not target and not user_id:
         await context.bot.send_message(chat_id=update.effective_user.id, text="Ошибка: ответьте на сообщение или укажите ID.")
@@ -673,10 +659,7 @@ async def cmd_unwarn(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     admin = update.effective_user
     target, user_id = await get_target_from_command(update, context)
-    
     chat_id = update.effective_chat.id
-    if update.effective_chat.type == "private":
-        chat_id = DEFAULT_CHAT_ID
     
     if not target and not user_id:
         await context.bot.send_message(chat_id=update.effective_user.id, text="Ошибка: ответьте на сообщение или укажите ID.")
