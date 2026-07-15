@@ -107,27 +107,43 @@ ADULT_WORDS = {"порно", "секс", "насилие", "изнасилова
 
 # ==================== УТИЛИТЫ ====================
 
+# ==================== УТИЛИТЫ ====================
+
 def clean_text(text: str) -> str:
     if not text:
         return ""
     text = re.sub(r'[^а-яёa-z0-9]', '', text.lower())
-    trans = str.maketrans('abcdefghijklmnopqrstuvwxyz', 'аацддефгхийкллмннопкпрсстувшксывз')
-    return text.translate(trans)
+    return text
 
 def contains_word(text: str, word_set: set) -> bool:
+    if not text:
+        return False
     cleaned = clean_text(text)
-    return any(clean_text(w) in cleaned for w in word_set)
+    for word in word_set:
+        if word in cleaned:  # Просто проверяем вхождение, без лишних преобразований
+            return True
+    return False
 
 def detect_link(text: str) -> bool:
-    return any(p.search(text) for p in LINK_PATTERNS) if text else False
+    if not text:
+        return False
+    for pattern in LINK_PATTERNS:
+        if pattern.search(text):
+            return True
+    return False
 
 def detect_phone(text: str) -> bool:
     if not text:
         return False
-    return any(p.search(w) for w in text.split() for p in PHONE_PATTERNS)
+    for pattern in PHONE_PATTERNS:
+        if pattern.search(text):
+            return True
+    return False
 
 def detect_email(text: str) -> bool:
-    return bool(EMAIL_PATTERN.search(text) if text else False)
+    if not text:
+        return False
+    return bool(EMAIL_PATTERN.search(text))
 
 def parse_time(time_str: str) -> int:
     if not time_str:
@@ -138,16 +154,20 @@ def parse_time(time_str: str) -> int:
     m = re.match(r'(\d+)([smhd])', time_str)
     if m:
         v, u = int(m.group(1)), m.group(2)
-        return v * {"s": 1, "m": 60, "h": 3600, "d": 86400}[u]
+        units = {"s": 1, "m": 60, "h": 3600, "d": 86400}
+        return v * units.get(u, 0)
     return 0
 
 def format_duration(seconds: int) -> str:
     if seconds == 0:
         return "навсегда"
-    for div, unit in [(86400, "дней"), (3600, "часов"), (60, "минут")]:
-        if seconds >= div:
-            return f"{seconds // div} {unit}"
-    return f"{seconds} секунд"
+    if seconds < 60:
+        return f"{seconds} секунд"
+    if seconds < 3600:
+        return f"{seconds // 60} минут"
+    if seconds < 86400:
+        return f"{seconds // 3600} часов"
+    return f"{seconds // 86400} дней"
 
 # ==================== ПРОВЕРКА АДМИНА ====================
 
