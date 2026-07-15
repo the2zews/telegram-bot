@@ -12,9 +12,6 @@ logger = logging.getLogger(__name__)
 
 TOKEN = "8637462837:AAFygcu0eLNbXwhOMRPwuDwiry_bx8ij5KM"
 
-# Список ID администраторов (владельцев)
-ADMIN_IDS = [5460879396, 8176145729]
-
 # Настройки флуда
 FLOOD_LIMIT = 8
 FLOOD_TIME = 15
@@ -132,8 +129,6 @@ INSULTS = [
     "съеби", "съебал",
     "тварь", "тварьебаная", "сукаебаная",
 ]
-
-MOTHER_TRIGGERS = ["мать", "мама", "мамочка", "мамаша", "мамашку", "мамочку", "маму"]
 
 HARMLESS = [
     "дебил", "идиот", "кретин", "тупица", "бестолочь", "недоумок",
@@ -257,24 +252,24 @@ def format_duration(seconds: int) -> str:
     else:
         return f"{seconds // 86400} дней"
 
-# ==================== ПРОВЕРКА АДМИНОВ ====================
+# ==================== ПРОВЕРКА АДМИНОВ (РАБОТАЕТ С АНОНИМНОСТЬЮ) ====================
 
 async def is_admin(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
     if not update.effective_user:
         return False
     
     user_id = update.effective_user.id
-    
-    # Проверяем по списку ID
-    if user_id in ADMIN_IDS:
-        return True
-    
-    # Проверяем, есть ли у пользователя права администратора в группе
+    chat_id = update.effective_chat.id
+
     try:
-        member = await context.bot.get_chat_member(update.effective_chat.id, user_id)
-        return member.status in ['administrator', 'creator']
-    except:
-        return False
+        member = await context.bot.get_chat_member(chat_id, user_id)
+        # Проверяем статус в группе (работает даже с анонимностью)
+        if member.status in ['administrator', 'creator']:
+            return True
+    except Exception as e:
+        logger.error(f"Ошибка проверки статуса: {e}")
+
+    return False
 
 async def is_target_creator(update: Update, context: ContextTypes.DEFAULT_TYPE, target_user_id: int) -> bool:
     chat_id = update.effective_chat.id
@@ -301,7 +296,7 @@ async def delete_after_delay(context: ContextTypes.DEFAULT_TYPE, chat_id: int, m
 
 async def send_admin_log(context: ContextTypes.DEFAULT_TYPE, text: str):
     try:
-        await context.bot.send_message(chat_id=ADMIN_IDS[0], text=text)
+        await context.bot.send_message(chat_id=5460879396, text=text)
     except:
         pass
 
@@ -432,7 +427,7 @@ async def handle_new_member(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except:
             pass
         
-        # 2. Настраиваем права (как на скриншоте)
+        # 2. Настраиваем права
         try:
             await context.bot.restrict_chat_member(
                 chat_id=chat_id,
