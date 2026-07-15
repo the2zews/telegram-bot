@@ -751,7 +751,7 @@ async def handle_message(update, context):
             await send_admin_log(context, f"AUTO BAN - 18+\nTarget: @{name}")
         return
 
-# ==================== НАСТРОЙКА ПОДСКАЗОК КОМАНД (УПРОЩЁННЫЙ ВАРИАНТ) ====================
+# ==================== НАСТРОЙКА ПОДСКАЗОК КОМАНД ====================
 
 async def set_commands(app):
     commands = [
