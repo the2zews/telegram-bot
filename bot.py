@@ -160,7 +160,6 @@ def detect_link(text: str) -> bool:
 def detect_phone(text: str) -> bool:
     if not text:
         return False
-    # Проверяем каждое слово отдельно
     words = text.split()
     for word in words:
         for pattern in PHONE_PATTERNS:
@@ -251,13 +250,26 @@ async def send_admin_log(context, text):
         except:
             pass
 
-# ==================== ОТПРАВКА ЗАПРОСА АДМИНАМ ====================
+# ==================== ОТПРАВКА ЗАПРОСА АДМИНАМ (С КОРОТКИМ ID) ====================
 
 async def send_approval_request(context, admin_ids, command_type, target_name, target_id, duration, duration_text, requester_name, requester_id, chat_id):
+    # Генерируем уникальный ID для запроса
+    request_id = f"{int(time.time())}_{requester_id}_{target_id}"
+    
+    # Сохраняем данные запроса
+    PENDING_COMMANDS[request_id] = {
+        "command_type": command_type,
+        "target_id": target_id,
+        "chat_id": chat_id,
+        "duration": duration,
+        "requester_id": requester_id,
+        "admin_ids": admin_ids
+    }
+    
     keyboard = [
         [
-            InlineKeyboardButton("Разрешить", callback_data=f"approve_{command_type}_{target_id}_{chat_id}_{duration}_{requester_id}"),
-            InlineKeyboardButton("Запретить", callback_data=f"deny_{command_type}_{target_id}_{chat_id}_{requester_id}")
+            InlineKeyboardButton("Разрешить", callback_data=f"a_{request_id}"),
+            InlineKeyboardButton("Запретить", callback_data=f"d_{request_id}")
         ]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
@@ -518,16 +530,25 @@ async def handle_callback(update, context):
         await query.edit_message_text("У вас нет прав для подтверждения команд.")
         return
     
-    parts = data.split('_')
-    action = parts[0]
-    command_type = parts[1]
-    target_id = int(parts[2])
-    chat_id = int(parts[3])
+    if not data.startswith('a_') and not data.startswith('d_'):
+        await query.edit_message_text("Неизвестная команда.")
+        return
     
-    if action == "approve":
-        duration = int(parts[4]) if len(parts) > 4 else 0
-        requester_id = int(parts[5]) if len(parts) > 5 else 0
-        
+    action = data[0]
+    request_id = data[2:]
+    
+    if request_id not in PENDING_COMMANDS:
+        await query.edit_message_text("Запрос устарел или уже обработан.")
+        return
+    
+    cmd_data = PENDING_COMMANDS[request_id]
+    command_type = cmd_data["command_type"]
+    target_id = cmd_data["target_id"]
+    chat_id = cmd_data["chat_id"]
+    duration = cmd_data["duration"]
+    requester_id = cmd_data["requester_id"]
+    
+    if action == 'a':  # approve
         try:
             if command_type == "mute":
                 duration_text = format_duration(duration) if duration > 0 else "навсегда"
@@ -581,14 +602,15 @@ async def handle_callback(update, context):
             return
         
         await query.edit_message_text(f"Команда {command_type} подтверждена и выполнена.")
+        del PENDING_COMMANDS[request_id]
         
-    elif action == "deny":
-        requester_id = int(parts[4]) if len(parts) > 4 else 0
+    elif action == 'd':  # deny
         await query.edit_message_text(f"Команда {command_type} отклонена.")
         try:
             await context.bot.send_message(chat_id=requester_id, text=f"Ваш запрос на {command_type} был отклонен.")
         except:
             pass
+        del PENDING_COMMANDS[request_id]
 
 # ==================== ОБРАБОТЧИК НОВЫХ УЧАСТНИКОВ ====================
 
