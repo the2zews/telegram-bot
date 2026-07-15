@@ -7,7 +7,8 @@ import sqlite3
 from typing import Dict, Optional
 from telegram import (
     Update, ChatPermissions, BotCommand, InlineKeyboardButton,
-    InlineKeyboardMarkup, BotCommandScopeAllGroupChats, BotCommandScopeAllPrivateChats
+    InlineKeyboardMarkup, BotCommandScopeAllGroupChats, BotCommandScopeAllPrivateChats,
+    BotCommandScopeChat
 )
 from telegram.ext import (
     Application, CommandHandler, MessageHandler, filters,
@@ -32,6 +33,7 @@ USER_CACHE = {}
 ADMIN_CACHE_TTL = 30
 USER_CACHE_TTL = 60
 
+# ==================== БАЗА ДАННЫХ ====================
 class Database:
     def __init__(self, db_path="warns.db"):
         self.db_path = db_path
@@ -103,12 +105,14 @@ class Database:
 
 db = Database()
 
+# ==================== ХРАНИЛИЩА ====================
 def get_muted_users(context): return context.bot_data.setdefault('muted_users', {})
 def get_user_messages(context): return context.bot_data.setdefault('user_messages', defaultdict(lambda: deque(maxlen=FLOOD_LIMIT)))
 def get_pinned_messages(context): return context.bot_data.setdefault('pinned_messages', {})
 def get_message_counter(context): return context.bot_data.get('message_counter', 0)
 def set_message_counter(context, value): context.bot_data['message_counter'] = value
 
+# ==================== РЕГУЛЯРКИ ====================
 LINK_PATTERNS = [re.compile(p, re.IGNORECASE) for p in [
     r'https?://[^\s]+', r'www\.[^\s]+', r't\.me/[^\s]+', r'telegram\.org/[^\s]+',
     r'bit\.ly/[^\s]+', r'clck\.ru/[^\s]+', r'[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/?'
@@ -125,6 +129,7 @@ INSULTS = {"даун", "олигофрен", "дегенерат", "слабоу
 ADULT_WORDS = {"порно", "секс", "насилие", "изнасилование", "педофил", "педофилия",
                "зоофил", "зоофилия", "сатанизм", "расчленение", "насильник", "педофильский"}
 
+# ==================== УТИЛИТЫ ====================
 def clean_text(text: str) -> str:
     if not text: return ""
     text = re.sub(r'[^а-яёa-z0-9]', '', text.lower())
@@ -161,6 +166,7 @@ def format_duration(seconds: int) -> str:
         if seconds >= div: return f"{seconds // div} {unit}"
     return f"{seconds} секунд"
 
+# ==================== КЭШ ====================
 def get_cached_user(user_id: int):
     if user_id in USER_CACHE:
         data, ts = USER_CACHE[user_id]
@@ -182,13 +188,13 @@ def get_cached_admin_status(user_id: int, chat_id: int) -> Optional[bool]:
 def set_cached_admin_status(user_id: int, chat_id: int, status: bool):
     ADMIN_CACHE[f"{user_id}_{chat_id}"] = (status, time.time())
 
+# ==================== ПРОВЕРКА АДМИНА И СОЗДАТЕЛЯ ====================
 async def is_command_from_real_admin(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
     if not update.message or not update.effective_user: return False
     user_id = update.effective_user.id
     chat_id = update.effective_chat.id
 
-    if user_id in ADMIN_IDS: return True
-    if user_id in db.get_admins(): return True
+    if user_id in ADMIN_IDS or user_id in db.get_admins(): return True
 
     cached = get_cached_admin_status(user_id, chat_id)
     if cached is not None: return cached
@@ -202,6 +208,24 @@ async def is_command_from_real_admin(update: Update, context: ContextTypes.DEFAU
         set_cached_admin_status(user_id, chat_id, False)
         return False
 
+async def is_group_creator(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
+    """Определяет реального создателя группы даже при анонимности"""
+    if not update.message: return False
+    chat_id = update.effective_chat.id
+    user_id = update.effective_user.id
+
+    if user_id == OWNER_ID: return True
+
+    try:
+        chat = await context.bot.get_chat(chat_id)
+        if hasattr(chat, 'creator') and chat.creator and chat.creator.id == user_id:
+            return True
+        member = await context.bot.get_chat_member(chat_id, user_id)
+        return member.status == "creator"
+    except:
+        return False
+
+# ==================== МУТ И ФЛУД ====================
 def is_muted(context, user_id, chat_id):
     key = f"{user_id}_{chat_id}"
     muted = get_muted_users(context)
@@ -226,6 +250,7 @@ def check_flood(context, user_id, chat_id):
         return True
     return False
 
+# ==================== ОТПРАВКА ====================
 async def send_with_counter(context, chat_id, text):
     counter = get_message_counter(context) + 1
     set_message_counter(context, counter)
@@ -258,6 +283,7 @@ async def send_approval_request(context, command_type, target_name, target_id, d
         except:
             pass
 
+# ==================== ВЫПОЛНЕНИЕ ====================
 async def process_approved_action(context, command_type, target_id, chat_id, duration=0):
     if command_type == "mute":
         dur = duration or 31536000
@@ -341,6 +367,7 @@ async def handle_command_with_approval(update, context, command_type):
     except:
         pass
 
+# ==================== КОМАНДЫ ====================
 async def cmd_start(update, context):
     if not await is_command_from_real_admin(update, context): return
     try:
@@ -392,47 +419,36 @@ async def cmd_rules(update, context):
 async def cmd_addadmin(update, context):
     chat_id = update.effective_chat.id
     user_id = update.effective_user.id
-    
-    is_owner = (user_id == 5460879396)
-    is_creator = False
-    
-    if not is_owner:
-        try:
-            member = await context.bot.get_chat_member(chat_id, user_id)
-            is_creator = (member.status == "creator")
-        except:
-            await update.message.reply_text("Не удалось проверить статус.")
-            return
-    
-    if not is_owner and not is_creator:
+
+    if not await is_group_creator(update, context):
         await update.message.reply_text("Только создатель группы может использовать эту команду.")
         return
-    
+
     if not context.args:
         await update.message.reply_text("Использование: /addadmin [id]")
         return
-    
+
     try:
         new_admin_id = int(context.args[0])
     except ValueError:
         await update.message.reply_text("Ошибка: укажите числовой ID.")
         return
-    
+
     try:
         user = await context.bot.get_chat(new_admin_id)
         name = user.username or user.first_name or str(new_admin_id)
     except:
         await update.message.reply_text(f"Ошибка: пользователь с ID {new_admin_id} не найден.")
         return
-    
+
     if new_admin_id == user_id:
         await update.message.reply_text("Нельзя добавить самого себя.")
         return
-    
+
     if new_admin_id in ADMIN_IDS:
         await update.message.reply_text(f"@{name} уже является владельцем бота.")
         return
-    
+
     if db.add_admin(new_admin_id):
         await update.message.reply_text(f"Админ @{name} (ID: {new_admin_id}) добавлен.")
     else:
@@ -441,36 +457,25 @@ async def cmd_addadmin(update, context):
 async def cmd_removeadmin(update, context):
     chat_id = update.effective_chat.id
     user_id = update.effective_user.id
-    
-    is_owner = (user_id == 5460879396)
-    is_creator = False
-    
-    if not is_owner:
-        try:
-            member = await context.bot.get_chat_member(chat_id, user_id)
-            is_creator = (member.status == "creator")
-        except:
-            await update.message.reply_text("Не удалось проверить статус.")
-            return
-    
-    if not is_owner and not is_creator:
+
+    if not await is_group_creator(update, context):
         await update.message.reply_text("Только создатель группы может использовать эту команду.")
         return
-    
+
     if not context.args:
         await update.message.reply_text("Использование: /removeadmin [id]")
         return
-    
+
     try:
         admin_id = int(context.args[0])
     except ValueError:
         await update.message.reply_text("Ошибка: укажите числовой ID.")
         return
-    
+
     if admin_id in ADMIN_IDS:
         await update.message.reply_text("Нельзя удалить владельца бота.")
         return
-    
+
     if db.remove_admin(admin_id):
         await update.message.reply_text(f"Админ с ID {admin_id} удалён.")
     else:
@@ -501,6 +506,7 @@ async def cmd_admins(update, context):
     text += f"\nВладельцы: {', '.join([str(uid) for uid in ADMIN_IDS])}"
     await update.message.reply_text(text)
 
+# ==================== ОБРАБОТЧИК КНОПОК ====================
 async def handle_callback(update, context):
     query = update.callback_query
     await query.answer()
@@ -563,6 +569,7 @@ async def handle_callback(update, context):
         logger.error(f"Ошибка: {e}")
         await query.edit_message_text(f"Ошибка: {e}")
 
+# ==================== ОТКРЕПЛЕНИЕ ====================
 async def handle_pinned_message(update, context):
     if not update.message or not update.message.pinned_message:
         return
@@ -585,6 +592,7 @@ async def handle_pinned_message(update, context):
         except Exception as e:
             logger.error(f"Ошибка открепления: {e}")
 
+# ==================== JOBQUEUE ====================
 async def cleanup_pending_commands(context):
     pending = context.bot_data.get('pending_commands', {})
     now = time.time()
@@ -612,6 +620,7 @@ async def unpin_channel_posts(context):
     except Exception as e:
         logger.error(f"JobQueue ошибка открепления: {e}")
 
+# ==================== ОСНОВНАЯ ОБРАБОТКА ====================
 async def handle_message(update, context):
     if not update.message or not update.effective_user or update.effective_user.is_bot:
         return
@@ -682,6 +691,7 @@ async def handle_message(update, context):
             db.reset_all_warns(user_id, chat_id)
         return
 
+# ==================== ПОДСКАЗКИ ====================
 async def set_commands(app):
     commands = [
         BotCommand("rules", "Правила группы"),
@@ -699,7 +709,9 @@ async def set_commands(app):
     ]
     await app.bot.set_my_commands(commands, scope=BotCommandScopeAllGroupChats())
     await app.bot.set_my_commands(commands, scope=BotCommandScopeAllPrivateChats())
+    await app.bot.set_my_commands(commands, scope=BotCommandScopeChat(chat_id=DISCUSSION_CHAT_ID))
 
+# ==================== ОЧИСТКА ПАМЯТИ ====================
 async def cleanup_memory(context):
     now = time.time()
     muted = get_muted_users(context)
@@ -710,6 +722,7 @@ async def cleanup_memory(context):
     if len(messages) > 100:
         messages.clear()
 
+# ==================== ЗАПУСК ====================
 async def post_init(app):
     await set_commands(app)
     if app.job_queue:
