@@ -25,6 +25,9 @@ FLOOD_TIME = 15
 FLOOD_MUTE_DURATION = 300
 ADMIN_MENTION = "Если заметите баги, пишите @yabrad"
 
+# ID твоей группы для JobQueue
+DISCUSSION_CHAT_ID = -1004328889951
+
 # ==================== БАЗА ДАННЫХ ====================
 
 class Database:
@@ -107,43 +110,27 @@ ADULT_WORDS = {"порно", "секс", "насилие", "изнасилова
 
 # ==================== УТИЛИТЫ ====================
 
-# ==================== УТИЛИТЫ ====================
-
 def clean_text(text: str) -> str:
     if not text:
         return ""
-    text = re.sub(r'[^а-яёa-z0-9]', '', text.lower())
-    return text
+    return re.sub(r'[^а-яёa-z0-9]', '', text.lower())
 
 def contains_word(text: str, word_set: set) -> bool:
     if not text:
         return False
     cleaned = clean_text(text)
-    for word in word_set:
-        if word in cleaned:  # Просто проверяем вхождение, без лишних преобразований
-            return True
-    return False
+    return any(word in cleaned for word in word_set)
 
 def detect_link(text: str) -> bool:
-    if not text:
-        return False
-    for pattern in LINK_PATTERNS:
-        if pattern.search(text):
-            return True
-    return False
+    return any(p.search(text) for p in LINK_PATTERNS) if text else False
 
 def detect_phone(text: str) -> bool:
     if not text:
         return False
-    for pattern in PHONE_PATTERNS:
-        if pattern.search(text):
-            return True
-    return False
+    return any(p.search(text) for p in PHONE_PATTERNS)
 
 def detect_email(text: str) -> bool:
-    if not text:
-        return False
-    return bool(EMAIL_PATTERN.search(text))
+    return bool(EMAIL_PATTERN.search(text) if text else False)
 
 def parse_time(time_str: str) -> int:
     if not time_str:
@@ -154,8 +141,7 @@ def parse_time(time_str: str) -> int:
     m = re.match(r'(\d+)([smhd])', time_str)
     if m:
         v, u = int(m.group(1)), m.group(2)
-        units = {"s": 1, "m": 60, "h": 3600, "d": 86400}
-        return v * units.get(u, 0)
+        return v * {"s": 1, "m": 60, "h": 3600, "d": 86400}[u]
     return 0
 
 def format_duration(seconds: int) -> str:
@@ -187,13 +173,6 @@ async def is_command_from_real_admin(update: Update, context: ContextTypes.DEFAU
         except:
             return True
     return False
-
-async def is_admin_in_chat(context, chat_id: int, user_id: int) -> bool:
-    try:
-        member = await context.bot.get_chat_member(chat_id, user_id)
-        return member.status in ["administrator", "creator"]
-    except:
-        return False
 
 # ==================== МУТ И ФЛУД ====================
 
@@ -268,22 +247,31 @@ async def process_approved_action(context, command_type: str, target_id: int, ch
         dur = duration or 31536000
         set_muted(target_id, chat_id, dur)
         await context.bot.restrict_chat_member(chat_id, target_id, permissions=ChatPermissions(can_send_messages=False), until_date=int(time.time()) + dur)
+        await send_with_counter(context, chat_id, f"Пользователь замучен.\nПравила: /rules")
+        db.reset_all_warns(target_id, chat_id)
     elif command_type == "unmute":
         remove_mute(target_id, chat_id)
         await context.bot.restrict_chat_member(chat_id, target_id, permissions=ChatPermissions(can_send_messages=True))
+        await send_with_counter(context, chat_id, f"Мут снят.")
     elif command_type == "ban":
         await context.bot.ban_chat_member(chat_id, target_id, until_date=int(time.time()) + duration if duration else None)
+        duration_text = format_duration(duration) if duration > 0 else "навсегда"
+        await send_with_counter(context, chat_id, f"Пользователь забанен на {duration_text}.\nПравила: /rules")
+        db.reset_all_warns(target_id, chat_id)
     elif command_type == "unban":
         await context.bot.unban_chat_member(chat_id, target_id)
+        await send_with_counter(context, chat_id, f"Бан снят.")
     elif command_type == "kick":
         await context.bot.ban_chat_member(chat_id, target_id)
         await context.bot.unban_chat_member(chat_id, target_id)
+        await send_with_counter(context, chat_id, f"Пользователь кикнут.")
+        db.reset_all_warns(target_id, chat_id)
     elif command_type == "warn":
         db.add_warn(target_id, chat_id, "insult")
+        await send_with_counter(context, chat_id, f"Пользователь получил предупреждение.")
     elif command_type == "unwarn":
         db.reset_all_warns(target_id, chat_id)
-    
-    db.reset_all_warns(target_id, chat_id)
+        await send_with_counter(context, chat_id, f"Предупреждения сняты.")
 
 async def get_target(update, context):
     if update.message.reply_to_message:
@@ -309,7 +297,10 @@ async def handle_command_with_approval(update, context, command_type: str):
     
     target, target_id = await get_target(update, context)
     if not target:
-        await update.effective_user.send_message("Ошибка: ответьте на сообщение или укажите ID.")
+        try:
+            await update.effective_user.send_message("Ошибка: ответьте на сообщение или укажите ID.")
+        except:
+            pass
         return
     
     name = target.username or target.first_name
@@ -319,7 +310,10 @@ async def handle_command_with_approval(update, context, command_type: str):
     if await is_command_from_real_admin(update, context):
         await process_approved_action(context, command_type, target_id, chat_id, duration)
         await update.message.delete()
-        await update.effective_user.send_message(f"Команда {command_type} выполнена.")
+        try:
+            await update.effective_user.send_message(f"Команда {command_type} выполнена.")
+        except:
+            pass
         return
     
     requester_name = update.effective_user.username or update.effective_user.first_name
@@ -328,7 +322,10 @@ async def handle_command_with_approval(update, context, command_type: str):
         requester_name, user_id, chat_id
     )
     await update.message.delete()
-    await update.effective_user.send_message(f"Запрос на {command_type} @{name} отправлен админам.")
+    try:
+        await update.effective_user.send_message(f"Запрос на {command_type} @{name} отправлен админам.")
+    except:
+        pass
 
 # ==================== КОМАНДЫ ====================
 
@@ -336,7 +333,10 @@ async def cmd_start(update, context):
     user_id = update.effective_user.id
     if user_id not in ADMIN_IDS:
         return
-    await update.effective_user.send_message("Бот-модератор активирован. Используйте /help.")
+    try:
+        await update.effective_user.send_message("Бот-модератор активирован. Используйте /help.")
+    except:
+        pass
 
 async def cmd_id(update, context):
     if update.message.reply_to_message:
@@ -350,9 +350,12 @@ async def cmd_help(update, context):
     user_id = update.effective_user.id
     if user_id not in ADMIN_IDS:
         return
-    await update.effective_user.send_message(
-        "Команды:\n/rules - правила\n/mute [user] [время] - мут\n/unmute [user] - снять мут\n/ban [user] [время] - бан\n/unban [user] - снять бан\n/warn [user] - предупреждение\n/unwarn [user] - снять предупреждения\n/id - показать ID\n/kick [user] - кикнуть\n\nВремя: 10s, 5m, 2h, 1d, 0 - навсегда"
-    )
+    try:
+        await update.effective_user.send_message(
+            "Команды:\n/rules - правила\n/mute [user] [время] - мут\n/unmute [user] - снять мут\n/ban [user] [время] - бан\n/unban [user] - снять бан\n/warn [user] - предупреждение\n/unwarn [user] - снять предупреждения\n/id - показать ID\n/kick [user] - кикнуть\n\nВремя: 10s, 5m, 2h, 1d, 0 - навсегда"
+        )
+    except:
+        pass
 
 async def cmd_rules(update, context):
     await update.message.reply_text(
@@ -432,36 +435,23 @@ async def handle_new_member(update, context):
         chat_id = update.effective_chat.id
         try:
             await context.bot.set_chat_administrator_custom_title(chat_id, user_id, "бибизяна")
-        except:
-            pass
-        try:
-            await context.bot.restrict_chat_member(
-                chat_id, user_id,
-                permissions=ChatPermissions(
-                    can_send_messages=True, can_send_media_messages=True,
-                    can_send_other_messages=True, can_add_web_page_previews=True,
-                    can_send_polls=False, can_send_audios=False, can_send_documents=False
-                )
-            )
-        except:
-            pass
+        except Exception as e:
+            logger.error(f"Ошибка выдачи тега: {e}")
 
 # ==================== ОТКРЕПЛЕНИЕ ====================
 
 async def handle_pinned_message(update, context):
-    message = update.message or update.edited_message
-    if not message or not message.pinned_message:
+    if not update.message or not update.message.pinned_message:
         return
 
-    chat_id = message.chat.id
-    pinned = message.pinned_message
+    chat_id = update.effective_chat.id
+    pinned = update.message.pinned_message
 
     if pinned_messages.get(chat_id) == pinned.message_id:
         return
 
     is_from_channel = (
-        pinned.sender_chat and 
-        pinned.sender_chat.type == "channel"
+        pinned.sender_chat and pinned.sender_chat.type == "channel"
     ) or getattr(pinned, 'is_automatic_forward', False)
 
     if is_from_channel:
@@ -472,40 +462,26 @@ async def handle_pinned_message(update, context):
         except Exception as e:
             logger.error(f"Ошибка открепления: {e}")
 
-# ==================== ОЧИСТКА ПАМЯТИ (JOBQUEUE) ====================
+# ==================== JOBQUEUE ДЛЯ ОТКРЕПЛЕНИЯ ====================
 
-async def cleanup_memory(context: ContextTypes.DEFAULT_TYPE):
-    """Очищает старые записи для экономии памяти"""
-    # Очищаем старые мут-записи (которые уже истекли)
-    now = time.time()
-    expired_keys = [k for k, v in muted_users.items() if v < now]
-    for k in expired_keys:
-        muted_users.pop(k, None)
-    
-    # Очищаем историю сообщений, если она слишком большая
-    if len(user_messages) > 100:
-        user_messages.clear()
-    
-    logger.info(f"Память очищена. Мутов: {len(muted_users)}, очередей: {len(user_messages)}")
+async def unpin_channel_posts(context: ContextTypes.DEFAULT_TYPE):
+    """Проверяет и открепляет сообщения из канала каждые 8 секунд"""
+    chat_id = DISCUSSION_CHAT_ID
+    try:
+        chat = await context.bot.get_chat(chat_id)
+        if chat.pinned_message:
+            pinned = chat.pinned_message
+            is_from_channel = (
+                pinned.sender_chat and pinned.sender_chat.type == "channel"
+            ) or getattr(pinned, 'is_automatic_forward', False)
+            
+            if is_from_channel:
+                await context.bot.unpin_chat_message(chat_id, message_id=pinned.message_id)
+                logger.info(f"JobQueue открепил сообщение из канала: {pinned.message_id}")
+    except Exception as e:
+        logger.error(f"JobQueue ошибка открепления: {e}")
 
-# ==================== ПОДСКАЗКИ ====================
-
-async def set_commands(app):
-    commands = [
-        BotCommand("rules", "Правила группы"),
-        BotCommand("mute", "Мут пользователя"),
-        BotCommand("unmute", "Снять мут"),
-        BotCommand("ban", "Забанить пользователя"),
-        BotCommand("unban", "Снять бан"),
-        BotCommand("warn", "Предупреждение"),
-        BotCommand("unwarn", "Снять предупреждения"),
-        BotCommand("id", "Показать ID"),
-        BotCommand("kick", "Кикнуть пользователя"),
-    ]
-    await app.bot.set_my_commands(commands, scope=BotCommandScopeAllGroupChats())
-    await app.bot.set_my_commands(commands, scope=BotCommandScopeAllPrivateChats())
-
-# ==================== ОСНОВНАЯ ОБРАБОТКА СООБЩЕНИЙ ====================
+# ==================== ОСНОВНАЯ ОБРАБОТКА ====================
 
 async def handle_message(update, context):
     if not update.message or not update.effective_user or update.effective_user.is_bot:
@@ -577,18 +553,42 @@ async def handle_message(update, context):
             db.reset_all_warns(user_id, chat_id)
         return
 
+# ==================== ПОДСКАЗКИ ====================
+
+async def set_commands(app):
+    commands = [
+        BotCommand("rules", "Правила группы"),
+        BotCommand("mute", "Мут пользователя"),
+        BotCommand("unmute", "Снять мут"),
+        BotCommand("ban", "Забанить пользователя"),
+        BotCommand("unban", "Снять бан"),
+        BotCommand("warn", "Предупреждение"),
+        BotCommand("unwarn", "Снять предупреждения"),
+        BotCommand("id", "Показать ID"),
+        BotCommand("kick", "Кикнуть пользователя"),
+    ]
+    await app.bot.set_my_commands(commands, scope=BotCommandScopeAllGroupChats())
+    await app.bot.set_my_commands(commands, scope=BotCommandScopeAllPrivateChats())
+
 # ==================== ЗАПУСК ====================
 
 def main():
-    # PicklePersistence для сохранения данных при перезапуске
     persistence = PicklePersistence(filepath="bot_data.pickle")
     
     app = Application.builder().token(TOKEN).persistence(persistence).build()
     
     # JobQueue для очистки памяти
-    app.job_queue.run_repeating(cleanup_memory, interval=300)  # раз в 5 минут
+    try:
+        app.job_queue.run_repeating(cleanup_memory, interval=300)
+    except:
+        pass
     
-    # Команды
+    # JobQueue для открепления из канала
+    try:
+        app.job_queue.run_repeating(unpin_channel_posts, interval=8, first=5)
+    except:
+        pass
+    
     app.add_handler(CommandHandler("start", cmd_start))
     app.add_handler(CommandHandler("help", cmd_help))
     app.add_handler(CommandHandler("rules", cmd_rules))
@@ -601,25 +601,32 @@ def main():
     app.add_handler(CommandHandler("unwarn", lambda u,c: handle_command_with_approval(u,c,"unwarn")))
     app.add_handler(CommandHandler("kick", lambda u,c: handle_command_with_approval(u,c,"kick")))
     
-    # Callback
     app.add_handler(CallbackQueryHandler(handle_callback))
     
-    # Message handlers
     app.add_handler(MessageHandler(filters.StatusUpdate.NEW_CHAT_MEMBERS, handle_new_member))
     app.add_handler(MessageHandler(filters.StatusUpdate.PINNED_MESSAGE, handle_pinned_message))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     app.add_handler(MessageHandler(filters.PHOTO & ~filters.COMMAND, handle_message))
     app.add_handler(MessageHandler(filters.VIDEO & ~filters.COMMAND, handle_message))
     
-    # Устанавливаем команды
     app.post_init = set_commands
     
-    print("Бот запущен (оптимизированный + память + сохранение)!")
+    print("Бот запущен (оптимизированный + память + сохранение + JobQueue)!")
     app.run_polling(
         allowed_updates=["message", "callback_query", "pinned_message", "chat_member"],
         drop_pending_updates=True,
         poll_interval=0.5
     )
+
+# ==================== ОЧИСТКА ПАМЯТИ ====================
+
+async def cleanup_memory(context: ContextTypes.DEFAULT_TYPE):
+    now = time.time()
+    expired_keys = [k for k, v in muted_users.items() if v < now]
+    for k in expired_keys:
+        muted_users.pop(k, None)
+    if len(user_messages) > 100:
+        user_messages.clear()
 
 if __name__ == "__main__":
     main()
