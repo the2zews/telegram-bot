@@ -4,7 +4,7 @@ import time
 import asyncio
 import sqlite3
 from collections import defaultdict
-from telegram import Update, ChatPermissions, BotCommand, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import Update, ChatPermissions, BotCommand, InlineKeyboardButton, InlineKeyboardMarkup, BotCommandScopeAllGroupChats, BotCommandScopeAllPrivateChats
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, CallbackQueryHandler
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
@@ -17,10 +17,6 @@ ADMIN_IDS = [5460879396, 8176145729, 1087968824]
 FLOOD_LIMIT = 8
 FLOOD_TIME = 15
 FLOOD_MUTE_DURATION = 300
-
-PENDING_COMMANDS = {}
-
-# ==================== СЧЁТЧИК СООБЩЕНИЙ ====================
 
 MESSAGE_COUNTER = 0
 ADMIN_MENTION = "Если заметите баги или ошибки, просьба написать админу о них @yabrad"
@@ -117,8 +113,6 @@ PHONE_PATTERNS = [
 
 EMAIL_PATTERN = re.compile(r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}', re.IGNORECASE)
 
-# ==================== СПИСКИ СЛОВ ====================
-
 INSULTS = {
     "даун", "олигофрен", "дегенерат", "слабоумный", "конченый", "конченая",
     "клоун", "ебалай", "еблашка", "ебло", "ебало", "соси", "сосал", "сосет",
@@ -177,8 +171,6 @@ def detect_email(text: str) -> bool:
         return False
     return bool(EMAIL_PATTERN.search(text))
 
-# ==================== ФУНКЦИИ ВРЕМЕНИ ====================
-
 def parse_time(time_str: str) -> int:
     if not time_str:
         return 0
@@ -211,10 +203,14 @@ def format_duration(seconds: int) -> str:
     else:
         return f"{seconds // 86400} дней"
 
-# ==================== ПРОВЕРКА АДМИНА ====================
+# ==================== ДИНАМИЧЕСКАЯ ПРОВЕРКА АДМИНА ====================
 
-def is_admin_user(user_id: int) -> bool:
-    return user_id in ADMIN_IDS
+async def is_admin_in_chat(context, chat_id: int, user_id: int) -> bool:
+    try:
+        member = await context.bot.get_chat_member(chat_id, user_id)
+        return member.status in ["administrator", "creator"]
+    except:
+        return False
 
 # ==================== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ====================
 
@@ -270,13 +266,16 @@ async def send_with_counter(context, chat_id, text):
 async def send_approval_request(context, admin_ids, command_type, target_name, target_id, duration, duration_text, requester_name, requester_id, chat_id):
     request_id = f"{int(time.time())}_{requester_id}_{target_id}"
     
-    PENDING_COMMANDS[request_id] = {
+    if 'pending_commands' not in context.bot_data:
+        context.bot_data['pending_commands'] = {}
+    
+    context.bot_data['pending_commands'][request_id] = {
         "command_type": command_type,
         "target_id": target_id,
         "chat_id": chat_id,
         "duration": duration,
         "requester_id": requester_id,
-        "admin_ids": admin_ids
+        "message_ids": {}
     }
     
     keyboard = [
@@ -297,19 +296,98 @@ async def send_approval_request(context, admin_ids, command_type, target_name, t
     
     for admin_id in admin_ids:
         try:
-            await context.bot.send_message(
+            msg = await context.bot.send_message(
                 chat_id=admin_id,
                 text=text,
                 reply_markup=reply_markup
             )
+            context.bot_data['pending_commands'][request_id]["message_ids"][admin_id] = msg.message_id
         except:
             pass
+
+# ==================== ВСПОМОГАТЕЛЬНАЯ ФУНКЦИЯ ДЛЯ ВЫПОЛНЕНИЯ ====================
+
+async def process_approved_action(context, command_type, target_id, chat_id, duration):
+    if command_type == "mute":
+        dur = duration if duration > 0 else 31536000
+        set_muted(target_id, chat_id, dur)
+        await context.bot.restrict_chat_member(
+            chat_id, target_id,
+            permissions=ChatPermissions(can_send_messages=False),
+            until_date=int(time.time()) + dur
+        )
+        await send_with_counter(context, chat_id, f"Пользователь замучен.\nПравила: /rules")
+        db.reset_all_warns(target_id, chat_id)
+        
+    elif command_type == "unmute":
+        remove_mute(target_id, chat_id)
+        await context.bot.restrict_chat_member(chat_id, target_id, permissions=ChatPermissions(can_send_messages=True))
+        await send_with_counter(context, chat_id, f"Мут снят.\nПравила: /rules")
+        
+    elif command_type == "ban":
+        dur = duration if duration > 0 else None
+        await context.bot.ban_chat_member(chat_id, target_id, until_date=int(time.time()) + duration if duration > 0 else None)
+        duration_text = format_duration(duration) if duration > 0 else "навсегда"
+        await send_with_counter(context, chat_id, f"Пользователь забанен на {duration_text}.\nПравила: /rules")
+        db.reset_all_warns(target_id, chat_id)
+        
+    elif command_type == "unban":
+        await context.bot.unban_chat_member(chat_id, target_id)
+        await send_with_counter(context, chat_id, f"Бан снят.\nПравила: /rules")
+        
+    elif command_type == "kick":
+        await context.bot.ban_chat_member(chat_id, target_id)
+        await context.bot.unban_chat_member(chat_id, target_id)
+        await send_with_counter(context, chat_id, f"Пользователь кикнут.\nПравила: /rules")
+        db.reset_all_warns(target_id, chat_id)
+        
+    elif command_type == "warn":
+        new_count = db.add_warn(target_id, chat_id, "insult")
+        await send_with_counter(context, chat_id, f"Пользователь получил предупреждение ({new_count}).\nПравила: /rules")
+        
+    elif command_type == "unwarn":
+        db.reset_all_warns(target_id, chat_id)
+        await send_with_counter(context, chat_id, f"Предупреждения сняты.\nПравила: /rules")
+
+# ==================== ОБЩАЯ ФУНКЦИЯ ДЛЯ КОМАНД ====================
+
+async def handle_command_with_approval(update, context, command_type):
+    user_id = update.effective_user.id
+    chat_id = update.effective_chat.id
+    
+    target, target_id = await get_target(update, context)
+    if not target:
+        await update.effective_user.send_message("Ошибка: ответьте на сообщение или укажите ID.")
+        return
+    
+    name = target.username or target.first_name
+    
+    # Если админ — выполняем сразу
+    if await is_admin_in_chat(context, chat_id, user_id):
+        duration = parse_time(update.message.text)
+        await process_approved_action(context, command_type, target_id, chat_id, duration)
+        await update.message.delete()
+        await update.effective_user.send_message(f"Команда {command_type} выполнена.")
+        return
+    
+    # Если не админ — запрос на подтверждение
+    duration = parse_time(update.message.text)
+    duration_text = format_duration(duration) if duration > 0 else "навсегда"
+    requester_name = update.effective_user.username or update.effective_user.first_name
+    
+    await send_approval_request(
+        context, ADMIN_IDS, command_type, name, target_id, duration, duration_text,
+        requester_name, user_id, chat_id
+    )
+    
+    await update.message.delete()
+    await update.effective_user.send_message(f"Запрос на {command_type} @{name} отправлен админам.")
 
 # ==================== КОМАНДЫ ====================
 
 async def cmd_start(update, context):
     user_id = update.effective_user.id
-    if not is_admin_user(user_id):
+    if user_id not in ADMIN_IDS:
         return
     await update.effective_user.send_message("Бот-модератор активирован. Используйте /help для списка команд.")
 
@@ -323,7 +401,7 @@ async def cmd_id(update, context):
 
 async def cmd_help(update, context):
     user_id = update.effective_user.id
-    if not is_admin_user(user_id):
+    if user_id not in ADMIN_IDS:
         return
     await update.effective_user.send_message(
         "Доступные команды:\n"
@@ -350,8 +428,6 @@ async def cmd_rules(update, context):
 Правила могут изменяться и дополняться."""
     await update.message.reply_text(rules_text)
 
-# ==================== КОМАНДЫ НАКАЗАНИЙ ====================
-
 async def get_target(update, context):
     if update.message.reply_to_message:
         target = update.message.reply_to_message.from_user
@@ -373,162 +449,25 @@ async def get_target(update, context):
     return None, None
 
 async def cmd_mute(update, context):
-    user_id = update.effective_user.id
-    if not is_admin_user(user_id):
-        return
-    
-    target, target_id = await get_target(update, context)
-    chat_id = update.effective_chat.id
-    if not target:
-        await update.effective_user.send_message("Ошибка: ответьте на сообщение или укажите ID.")
-        return
-    
-    name = target.username or target.first_name
-    duration = parse_time(update.message.text)
-    duration_text = format_duration(duration) if duration > 0 else "навсегда"
-    requester_name = update.effective_user.username or update.effective_user.first_name
-    
-    await send_approval_request(
-        context, ADMIN_IDS, "mute", name, target_id, duration, duration_text,
-        requester_name, user_id, chat_id
-    )
-    
-    await update.message.delete()
-    await update.effective_user.send_message(f"Запрос на мут @{name} отправлен админам.")
+    await handle_command_with_approval(update, context, "mute")
 
 async def cmd_unmute(update, context):
-    user_id = update.effective_user.id
-    if not is_admin_user(user_id):
-        return
-    
-    target, target_id = await get_target(update, context)
-    chat_id = update.effective_chat.id
-    if not target:
-        await update.effective_user.send_message("Ошибка: ответьте на сообщение или укажите ID.")
-        return
-    
-    name = target.username or target.first_name
-    requester_name = update.effective_user.username or update.effective_user.first_name
-    
-    await send_approval_request(
-        context, ADMIN_IDS, "unmute", name, target_id, 0, "снятие мута",
-        requester_name, user_id, chat_id
-    )
-    
-    await update.message.delete()
-    await update.effective_user.send_message(f"Запрос на снятие мута @{name} отправлен админам.")
+    await handle_command_with_approval(update, context, "unmute")
 
 async def cmd_ban(update, context):
-    user_id = update.effective_user.id
-    if not is_admin_user(user_id):
-        return
-    
-    target, target_id = await get_target(update, context)
-    chat_id = update.effective_chat.id
-    if not target:
-        await update.effective_user.send_message("Ошибка: ответьте на сообщение или укажите ID.")
-        return
-    
-    name = target.username or target.first_name
-    duration = parse_time(update.message.text)
-    duration_text = format_duration(duration) if duration > 0 else "навсегда"
-    requester_name = update.effective_user.username or update.effective_user.first_name
-    
-    await send_approval_request(
-        context, ADMIN_IDS, "ban", name, target_id, duration, duration_text,
-        requester_name, user_id, chat_id
-    )
-    
-    await update.message.delete()
-    await update.effective_user.send_message(f"Запрос на бан @{name} отправлен админам.")
+    await handle_command_with_approval(update, context, "ban")
 
 async def cmd_unban(update, context):
-    user_id = update.effective_user.id
-    if not is_admin_user(user_id):
-        return
-    
-    target, target_id = await get_target(update, context)
-    chat_id = update.effective_chat.id
-    if not target:
-        await update.effective_user.send_message("Ошибка: ответьте на сообщение или укажите ID.")
-        return
-    
-    name = target.username or target.first_name
-    requester_name = update.effective_user.username or update.effective_user.first_name
-    
-    await send_approval_request(
-        context, ADMIN_IDS, "unban", name, target_id, 0, "снятие бана",
-        requester_name, user_id, chat_id
-    )
-    
-    await update.message.delete()
-    await update.effective_user.send_message(f"Запрос на снятие бана @{name} отправлен админам.")
+    await handle_command_with_approval(update, context, "unban")
 
 async def cmd_kick(update, context):
-    user_id = update.effective_user.id
-    if not is_admin_user(user_id):
-        return
-    
-    target, target_id = await get_target(update, context)
-    chat_id = update.effective_chat.id
-    if not target:
-        await update.effective_user.send_message("Ошибка: ответьте на сообщение или укажите ID.")
-        return
-    
-    name = target.username or target.first_name
-    requester_name = update.effective_user.username or update.effective_user.first_name
-    
-    await send_approval_request(
-        context, ADMIN_IDS, "kick", name, target_id, 0, "кик",
-        requester_name, user_id, chat_id
-    )
-    
-    await update.message.delete()
-    await update.effective_user.send_message(f"Запрос на кик @{name} отправлен админам.")
+    await handle_command_with_approval(update, context, "kick")
 
 async def cmd_warn(update, context):
-    user_id = update.effective_user.id
-    if not is_admin_user(user_id):
-        return
-    
-    target, target_id = await get_target(update, context)
-    chat_id = update.effective_chat.id
-    if not target:
-        await update.effective_user.send_message("Ошибка: ответьте на сообщение или укажите ID.")
-        return
-    
-    name = target.username or target.first_name
-    requester_name = update.effective_user.username or update.effective_user.first_name
-    
-    await send_approval_request(
-        context, ADMIN_IDS, "warn", name, target_id, 0, "предупреждение",
-        requester_name, user_id, chat_id
-    )
-    
-    await update.message.delete()
-    await update.effective_user.send_message(f"Запрос на предупреждение @{name} отправлен админам.")
+    await handle_command_with_approval(update, context, "warn")
 
 async def cmd_unwarn(update, context):
-    user_id = update.effective_user.id
-    if not is_admin_user(user_id):
-        return
-    
-    target, target_id = await get_target(update, context)
-    chat_id = update.effective_chat.id
-    if not target:
-        await update.effective_user.send_message("Ошибка: ответьте на сообщение или укажите ID.")
-        return
-    
-    name = target.username or target.first_name
-    requester_name = update.effective_user.username or update.effective_user.first_name
-    
-    await send_approval_request(
-        context, ADMIN_IDS, "unwarn", name, target_id, 0, "снятие предупреждений",
-        requester_name, user_id, chat_id
-    )
-    
-    await update.message.delete()
-    await update.effective_user.send_message(f"Запрос на снятие предупреждений @{name} отправлен админам.")
+    await handle_command_with_approval(update, context, "unwarn")
 
 # ==================== ОБРАБОТЧИК КНОПОК ====================
 
@@ -536,8 +475,10 @@ async def handle_callback(update, context):
     query = update.callback_query
     await query.answer()
     
+    logger.info(f"Callback received: {query.data} from user {query.from_user.id}")
+    
     data = query.data
-    admin_id = update.effective_user.id
+    admin_id = query.from_user.id
     
     if admin_id not in ADMIN_IDS:
         await query.edit_message_text("У вас нет прав.")
@@ -550,81 +491,51 @@ async def handle_callback(update, context):
     action = data[0]
     request_id = data[2:]
     
-    if request_id not in PENDING_COMMANDS:
-        await query.edit_message_text("Запрос устарел.")
+    pending = context.bot_data.get('pending_commands', {})
+    if request_id not in pending:
+        await query.edit_message_text("Запрос устарел или уже обработан.")
         return
     
-    cmd_data = PENDING_COMMANDS[request_id]
+    cmd_data = pending[request_id]
     command_type = cmd_data["command_type"]
     target_id = cmd_data["target_id"]
     chat_id = cmd_data["chat_id"]
     duration = cmd_data["duration"]
     requester_id = cmd_data["requester_id"]
+    message_ids = cmd_data.get("message_ids", {})
     
-    del PENDING_COMMANDS[request_id]
+    del context.bot_data['pending_commands'][request_id]
     
-    if action == 'a':
-        try:
-            if command_type == "mute":
-                duration_text = format_duration(duration) if duration > 0 else "навсегда"
-                set_muted(target_id, chat_id, duration if duration > 0 else 31536000)
-                await context.bot.restrict_chat_member(
-                    chat_id, target_id,
-                    permissions=ChatPermissions(can_send_messages=False),
-                    until_date=int(time.time()) + (duration if duration > 0 else 31536000)
-                )
-                await send_with_counter(context, chat_id, f"Пользователь замучен на {duration_text}.\nПравила: /rules")
-                db.reset_all_warns(target_id, chat_id)
-                
-            elif command_type == "unmute":
-                remove_mute(target_id, chat_id)
-                await context.bot.restrict_chat_member(chat_id, target_id, permissions=ChatPermissions(can_send_messages=True))
-                await send_with_counter(context, chat_id, f"Мут снят.\nПравила: /rules")
-                
-            elif command_type == "ban":
-                bot_user = await context.bot.get_me()
-                if target_id == bot_user.id:
-                    await query.edit_message_text("Нельзя забанить бота.")
-                    return
-                duration_text = format_duration(duration) if duration > 0 else "навсегда"
-                await context.bot.ban_chat_member(chat_id, target_id, until_date=int(time.time()) + duration if duration > 0 else None)
-                await send_with_counter(context, chat_id, f"Пользователь забанен на {duration_text}.\nПравила: /rules")
-                db.reset_all_warns(target_id, chat_id)
-                
-            elif command_type == "unban":
-                await context.bot.unban_chat_member(chat_id, target_id)
-                await send_with_counter(context, chat_id, f"Бан снят.\nПравила: /rules")
-                
-            elif command_type == "kick":
-                await context.bot.ban_chat_member(chat_id, target_id)
-                await context.bot.unban_chat_member(chat_id, target_id)
-                await send_with_counter(context, chat_id, f"Пользователь кикнут.\nПравила: /rules")
-                db.reset_all_warns(target_id, chat_id)
-                
-            elif command_type == "warn":
-                new_count = db.add_warn(target_id, chat_id, "insult")
-                await send_with_counter(context, chat_id, f"Пользователь получил предупреждение ({new_count}).\nПравила: /rules")
-                
-            elif command_type == "unwarn":
-                db.reset_all_warns(target_id, chat_id)
-                await send_with_counter(context, chat_id, f"Предупреждения сняты.\nПравила: /rules")
-                
-        except Exception as e:
-            await query.edit_message_text(f"Ошибка: {e}")
-            return
+    try:
+        if action == 'a':
+            await process_approved_action(context, command_type, target_id, chat_id, duration)
+            result_text = f"Команда {command_type} выполнена."
+            notify_text = f"Ваш запрос на {command_type} выполнен."
+        else:
+            result_text = f"Команда {command_type} отклонена."
+            notify_text = f"Ваш запрос на {command_type} отклонен."
         
-        await query.edit_message_text(f"Команда {command_type} выполнена.")
+        await query.edit_message_text(result_text)
+        
         try:
-            await context.bot.send_message(chat_id=requester_id, text=f"Ваш запрос на {command_type} выполнен.")
+            await context.bot.send_message(chat_id=requester_id, text=notify_text)
         except:
             pass
         
-    elif action == 'd':
-        await query.edit_message_text(f"Команда {command_type} отклонена.")
-        try:
-            await context.bot.send_message(chat_id=requester_id, text=f"Ваш запрос на {command_type} отклонен.")
-        except:
-            pass
+        for other_admin, msg_id in message_ids.items():
+            if other_admin != admin_id:
+                try:
+                    await context.bot.edit_message_text(
+                        chat_id=other_admin,
+                        message_id=msg_id,
+                        text=f"Запрос обработан.\n\n{result_text}"
+                    )
+                except:
+                    pass
+                    
+    except Exception as e:
+        logger.error(f"Ошибка при обработке callback: {e}")
+        await query.edit_message_text(f"Ошибка: {e}")
 
 # ==================== ОБРАБОТЧИК НОВЫХ УЧАСТНИКОВ ====================
 
@@ -648,32 +559,25 @@ async def handle_new_member(update, context):
         except:
             pass
 
-# ==================== ОТКРЕПЛЕНИЕ СООБЩЕНИЙ ====================
+# ==================== ОТКРЕПЛЕНИЕ ====================
 
 async def handle_pinned_message(update, context):
+    if not update.message or not update.message.pinned_message:
+        return
+    
     chat_id = update.effective_chat.id
+    pinned_msg = update.message.pinned_message
     
-    try:
-        chat = await context.bot.get_chat(chat_id)
-        if not chat.pinned_message:
-            return
-        pinned_msg_id = chat.pinned_message.message_id
-    except:
+    if pinned_messages.get(chat_id) == pinned_msg.message_id:
         return
     
-    if pinned_messages.get(chat_id) == pinned_msg_id:
-        return
-    
-    try:
-        await context.bot.unpin_chat_message(chat_id=chat_id)
-        pinned_messages[chat_id] = pinned_msg_id
-        
-        logger.info(f"Сообщение {pinned_msg_id} откреплено в чате {chat_id}")
-        
-        if update.effective_user and is_admin_user(update.effective_user.id):
-            await update.effective_user.send_message("Сообщение откреплено. Если хотите закрепить навсегда — закрепите повторно.")
-    except Exception as e:
-        logger.error(f"Ошибка открепления: {e}")
+    if pinned_msg.sender_chat and pinned_msg.sender_chat.type in ["channel", "supergroup"]:
+        try:
+            await context.bot.unpin_chat_message(chat_id, message_id=pinned_msg.message_id)
+            pinned_messages[chat_id] = pinned_msg.message_id
+            logger.info(f"Авто-откреплено сообщение из канала: {pinned_msg.message_id}")
+        except Exception as e:
+            logger.error(f"Не удалось открепить: {e}")
 
 # ==================== ОСНОВНАЯ ОБРАБОТКА ====================
 
@@ -684,7 +588,7 @@ async def handle_message(update, context):
     user_id = update.effective_user.id
     chat_id = update.effective_chat.id
     
-    if is_admin_user(user_id):
+    if await is_admin_in_chat(context, chat_id, user_id):
         return
     
     if is_muted(user_id, chat_id):
@@ -765,7 +669,9 @@ async def set_commands(app):
         BotCommand("id", "Показать ID"),
         BotCommand("kick", "Кикнуть пользователя"),
     ]
-    await app.bot.set_my_commands(commands)
+    
+    await app.bot.set_my_commands(commands, scope=BotCommandScopeAllGroupChats())
+    await app.bot.set_my_commands(commands, scope=BotCommandScopeAllPrivateChats())
 
 # ==================== ЗАПУСК ====================
 
@@ -792,4 +698,7 @@ app.add_handler(MessageHandler(filters.PHOTO & ~filters.COMMAND, handle_message)
 app.add_handler(MessageHandler(filters.VIDEO & ~filters.COMMAND, handle_message))
 
 print("Бот запущен!")
-app.run_polling(allowed_updates=["message", "pinned_message"])
+app.run_polling(
+    allowed_updates=["message", "callback_query", "pinned_message", "chat_member"],
+    drop_pending_updates=True
+)
